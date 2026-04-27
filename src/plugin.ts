@@ -39,6 +39,7 @@ import {
 	ClaudeAgentSettings,
 	CodexAgentSettings,
 	QoderAgentSettings,
+	CodeBuddyAgentSettings,
 	CustomAgentSettings,
 } from "./types/agent";
 import type { SavedSessionInfo } from "./types/session";
@@ -72,6 +73,7 @@ export interface AgentClientPluginSettings {
 	claude: ClaudeAgentSettings;
 	codex: CodexAgentSettings;
 	qoder: QoderAgentSettings;
+	codebuddy: CodeBuddyAgentSettings;
 	customAgents: CustomAgentSettings[];
 	/** Default agent ID for new views (renamed from activeAgentId for multi-session) */
 	defaultAgentId: string;
@@ -151,6 +153,13 @@ const DEFAULT_SETTINGS: AgentClientPluginSettings = {
 		id: "qoder-acp",
 		displayName: "Qoder CLI",
 		command: "qodercli",
+		args: ["--acp"],
+		env: [],
+	},
+	codebuddy: {
+		id: "codebuddy-acp",
+		displayName: "CodeBuddy CLI",
+		command: "cbc",
 		args: ["--acp"],
 		env: [],
 	},
@@ -850,6 +859,7 @@ export default class AgentClientPlugin extends Plugin {
 		const rk = obj(raw.codex) ?? {};
 		const rg = obj(raw.gemini) ?? {};
 		const rq = obj(raw.qoder) ?? {};
+		const rcb = obj(raw.codebuddy) ?? {};
 		const re = obj(raw.exportSettings) ?? {};
 		const rd = obj(raw.displaySettings) ?? {};
 
@@ -868,6 +878,7 @@ export default class AgentClientPlugin extends Plugin {
 			D.codex.id,
 			D.gemini.id,
 			D.qoder.id,
+			D.codebuddy.id,
 			...customAgents.map((a) => a.id),
 		];
 		const rawDefaultId =
@@ -922,6 +933,16 @@ export default class AgentClientPlugin extends Plugin {
 						? sanitizeArgs(rq.args)
 						: D.qoder.args,
 				env: normalizeEnvVars(rq.env),
+			},
+			codebuddy: {
+				id: D.codebuddy.id,
+				displayName: str(rcb.displayName, D.codebuddy.displayName),
+				command: str(rcb.command, "") || D.codebuddy.command,
+				args:
+					sanitizeArgs(rcb.args).length > 0
+						? sanitizeArgs(rcb.args)
+						: D.codebuddy.args,
+				env: normalizeEnvVars(rcb.env),
 			},
 			customAgents,
 			defaultAgentId,
@@ -1144,6 +1165,7 @@ export default class AgentClientPlugin extends Plugin {
 		ids.add(this.settings.codex.id);
 		ids.add(this.settings.gemini.id);
 		ids.add(this.settings.qoder.id);
+		ids.add(this.settings.codebuddy.id);
 		for (const agent of this.settings.customAgents) {
 			if (agent.id && agent.id.length > 0) {
 				ids.add(agent.id);

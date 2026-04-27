@@ -92,6 +92,14 @@ export interface CodexAgentSettings extends BaseAgentSettings {
 export type QoderAgentSettings = BaseAgentSettings;
 
 /**
+ * Configuration for CodeBuddy CLI (cbc) agent.
+ *
+ * CodeBuddy authenticates via OAuth login (run `cbc` once in terminal),
+ * no API key field is required.
+ */
+export type CodeBuddyAgentSettings = BaseAgentSettings;
+
+/**
  * Configuration for custom ACP-compatible agents.
  *
  * Uses only the base settings, allowing users to configure

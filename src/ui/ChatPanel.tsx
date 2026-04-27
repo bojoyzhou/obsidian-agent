@@ -267,6 +267,12 @@ export function ChatPanel({
 				plugin.settings.qoder.displayName || plugin.settings.qoder.id
 			);
 		}
+		if (activeId === plugin.settings.codebuddy.id) {
+			return (
+				plugin.settings.codebuddy.displayName ||
+				plugin.settings.codebuddy.id
+			);
+		}
 		const custom = plugin.settings.customAgents.find(
 			(agent) => agent.id === activeId,
 		);
