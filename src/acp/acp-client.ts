@@ -31,6 +31,51 @@ import {
 	isUserAbortedError,
 } from "../utils/error-utils";
 
+// ============================================================================
+// Timeouts — agents that silently hang (connection never negotiates, prompt
+// never streams any chunk) are a common pain point (upstream #155, #216,
+// #233). These timeouts surface a clear error to the UI instead of leaving
+// the user staring at a blank "Connecting..." or stuck loading indicator.
+// ============================================================================
+
+/** Max time to wait for the initial ACP `initialize` handshake. */
+const INIT_HANDSHAKE_TIMEOUT_MS = 20_000;
+
+/** Max time to wait for `newSession` / `loadSession` / `resumeSession`. */
+const SESSION_RPC_TIMEOUT_MS = 20_000;
+
+/**
+ * Max time to wait for the agent to emit *any* activity (session update OR
+ * final response) after a prompt is sent. Agents that hang without sending
+ * end_turn would otherwise leave the UI stuck forever.
+ */
+const PROMPT_IDLE_TIMEOUT_MS = 120_000;
+
+/**
+ * Wrap a promise with a timeout. If `promise` doesn't settle within `ms`,
+ * the returned promise rejects with an Error whose message contains the
+ * label for easier debugging.
+ */
+function withTimeout<T>(
+	promise: Promise<T>,
+	ms: number,
+	label: string,
+): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => {
+			reject(
+				new Error(
+					`${label} timed out after ${Math.round(ms / 1000)}s`,
+				),
+			);
+		}, ms);
+	});
+	return Promise.race([promise, timeout]).finally(() => {
+		if (timer) clearTimeout(timer);
+	}) as Promise<T>;
+}
+
 /**
  * Runtime configuration for launching an AI agent process.
  * Converted from BaseAgentSettings by toAgentConfig() in settings-service.
@@ -348,21 +393,25 @@ export class AcpClient {
 		try {
 			this.logger.log("[AcpClient] Starting ACP initialization...");
 
-			const initResult = await this.connection.initialize({
-				protocolVersion: acp.PROTOCOL_VERSION,
-				clientCapabilities: {
-					fs: {
-						readTextFile: false,
-						writeTextFile: false,
+			const initResult = await withTimeout(
+				this.connection.initialize({
+					protocolVersion: acp.PROTOCOL_VERSION,
+					clientCapabilities: {
+						fs: {
+							readTextFile: false,
+							writeTextFile: false,
+						},
+						terminal: true,
 					},
-					terminal: true,
-				},
-				clientInfo: {
-					name: "obsidian-agent-client",
-					title: "Agent Client for Obsidian",
-					version: this.plugin.manifest.version,
-				},
-			});
+					clientInfo: {
+						name: "obsidian-agent-client",
+						title: "Agent Client for Obsidian",
+						version: this.plugin.manifest.version,
+					},
+				}),
+				INIT_HANDSHAKE_TIMEOUT_MS,
+				"ACP handshake",
+			);
 
 			this.logger.log(
 				`[AcpClient] ✅ Connected to agent (protocol v${initResult.protocolVersion})`,
@@ -392,10 +441,14 @@ export class AcpClient {
 		try {
 			this.logger.log("[AcpClient] Creating new session...");
 
-			const response = await connection.newSession({
-				cwd: this.toSessionCwd(workingDirectory),
-				mcpServers: [],
-			});
+			const response = await withTimeout(
+				connection.newSession({
+					cwd: this.toSessionCwd(workingDirectory),
+					mcpServers: [],
+				}),
+				SESSION_RPC_TIMEOUT_MS,
+				"newSession",
+			);
 
 			this.logger.log(
 				`[AcpClient] Created session: ${response.sessionId}`,
@@ -450,9 +503,45 @@ export class AcpClient {
 				`[AcpClient] Sending prompt with ${content.length} content blocks`,
 			);
 
-			const promptResult = await connection.prompt({
-				sessionId: sessionId,
-				prompt: acpContent,
+			// Idle watchdog: if the agent neither sends any session update
+			// nor returns the prompt result within PROMPT_IDLE_TIMEOUT_MS,
+			// reject so the UI surfaces an error instead of hanging.
+			// We poll every 5s and reset the deadline whenever a new update
+			// arrives, so long-running tool calls that keep streaming are fine.
+			let idleTimer: ReturnType<typeof setInterval> | undefined;
+			const idlePromise = new Promise<never>((_, reject) => {
+				let lastCount = this.handler.getUpdateCount();
+				let lastProgressAt = Date.now();
+				idleTimer = setInterval(() => {
+					const count = this.handler.getUpdateCount();
+					if (count !== lastCount) {
+						lastCount = count;
+						lastProgressAt = Date.now();
+						return;
+					}
+					if (
+						Date.now() - lastProgressAt >=
+						PROMPT_IDLE_TIMEOUT_MS
+					) {
+						reject(
+							new Error(
+								`Agent stopped responding — no progress for ${Math.round(
+									PROMPT_IDLE_TIMEOUT_MS / 1000,
+								)}s. Check the agent process and try again.`,
+							),
+						);
+					}
+				}, 5_000);
+			});
+
+			const promptResult = await Promise.race([
+				connection.prompt({
+					sessionId: sessionId,
+					prompt: acpContent,
+				}),
+				idlePromise,
+			]).finally(() => {
+				if (idleTimer) clearInterval(idleTimer);
 			});
 
 			this.logger.log(

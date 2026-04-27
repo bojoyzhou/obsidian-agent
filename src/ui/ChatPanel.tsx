@@ -46,6 +46,7 @@ const EMPTY_COMMANDS: SlashCommand[] = [];
 import { ChatHeader } from "./ChatHeader";
 import { MessageList } from "./MessageList";
 import { InputArea } from "./InputArea";
+import { ChatErrorBoundary } from "./shared/ChatErrorBoundary";
 import type { IChatViewHost } from "./view-host";
 
 // ============================================================================
@@ -1052,18 +1053,27 @@ export function ChatPanel({
 		) : null;
 
 	const messageListElement = (
-		<MessageList
-			messages={messages}
-			isSending={isSending}
-			isSessionReady={isSessionReady}
-			isRestoringSession={sessionHistory.loading}
-			agentLabel={activeAgentLabel}
-			plugin={plugin}
-			view={viewHost}
-			terminalClient={terminalClientRef.current}
-			onApprovePermission={agent.approvePermission}
-			hasActivePermission={agent.hasActivePermission}
-		/>
+		<ChatErrorBoundary
+			label="message list"
+			onRetry={() => {
+				// On retry, clear messages so a bogus render doesn't keep
+				// crashing the boundary. Session state is untouched.
+				agent.clearMessages();
+			}}
+		>
+			<MessageList
+				messages={messages}
+				isSending={isSending}
+				isSessionReady={isSessionReady}
+				isRestoringSession={sessionHistory.loading}
+				agentLabel={activeAgentLabel}
+				plugin={plugin}
+				view={viewHost}
+				terminalClient={terminalClientRef.current}
+				onApprovePermission={agent.approvePermission}
+				hasActivePermission={agent.hasActivePermission}
+			/>
+		</ChatErrorBoundary>
 	);
 
 	const inputAreaElement = (

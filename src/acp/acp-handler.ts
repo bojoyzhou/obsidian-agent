@@ -43,6 +43,11 @@ export class AcpHandler {
 		return this.promptSessionUpdateCount > 0;
 	}
 
+	/** Current count of updates received since last reset. */
+	getUpdateCount(): number {
+		return this.promptSessionUpdateCount;
+	}
+
 	onSessionUpdate(callback: (update: SessionUpdate) => void): () => void {
 		this.sessionUpdateListeners.add(callback);
 		return () => this.sessionUpdateListeners.delete(callback);

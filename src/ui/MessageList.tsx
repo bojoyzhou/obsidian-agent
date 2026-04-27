@@ -5,7 +5,7 @@ import type { ChatMessage } from "../types/chat";
 import type { AcpClient } from "../acp/acp-client";
 import type AgentClientPlugin from "../plugin";
 import type { IChatViewHost } from "./view-host";
-import { setIcon } from "obsidian";
+import { IconActionButton } from "./shared/IconButton";
 import { MessageBubble } from "./MessageBubble";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -247,16 +247,15 @@ export function MessageList({
 
 			{/* Scroll to bottom button */}
 			{!isAtBottom && (
-				<button
+				<IconActionButton
 					className="agent-client-scroll-to-bottom"
+					iconName="chevron-down"
+					ariaLabel="Scroll to bottom"
 					onClick={() => {
 						virtualizer.scrollToIndex(messages.length - 1, {
 							align: "end",
 							behavior: "smooth",
 						});
-					}}
-					ref={(el) => {
-						if (el) setIcon(el, "chevron-down");
 					}}
 				/>
 			)}

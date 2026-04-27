@@ -119,6 +119,14 @@ interface SessionSlot {
 	 */
 	sendAborted: boolean;
 	/**
+	 * Timestamp (ms) of the most recent cancel. Streaming updates that
+	 * arrive within CANCEL_GRACE_MS of this timestamp are dropped — some
+	 * agents keep pushing chunks for a short while after session/cancel,
+	 * which would otherwise cause duplicated content on the next turn
+	 * (see upstream issue #155).
+	 */
+	cancelledAt: number | null;
+	/**
 	 * Pending updates to apply on the next RAF flush.
 	 * Background sessions keep buffering; when user switches to this session
 	 * we flush immediately so there's no catch-up flicker.
@@ -138,10 +146,32 @@ function createEmptySlot(): SessionSlot {
 		lastUserMessage: null,
 		toolCallIndex: new Map(),
 		sendAborted: false,
+		cancelledAt: null,
 		pendingUpdates: [],
 		ignoreUpdates: false,
 	};
 }
+
+/**
+ * Grace period after a cancel during which incoming streaming chunks are
+ * dropped. Some agents keep pushing a handful of chunks after honoring
+ * session/cancel; without this window they would render into the next turn.
+ */
+const CANCEL_GRACE_MS = 1500;
+
+/**
+ * Update types that represent streaming content. Only these are dropped
+ * during the post-cancel grace window — non-content updates (mode,
+ * config, usage, available_commands, session_info) remain useful.
+ */
+const STREAMING_UPDATE_TYPES = new Set<SessionUpdate["type"]>([
+	"agent_message_chunk",
+	"agent_thought_chunk",
+	"user_message_chunk",
+	"tool_call",
+	"tool_call_update",
+	"plan",
+]);
 
 export interface UseAgentMessagesOptions {
 	/**
@@ -302,6 +332,18 @@ export function useAgentMessages(
 		(update: SessionUpdate) => {
 			const slot = getSlot(update.sessionId || null);
 			if (slot.ignoreUpdates) return;
+
+			// Drop streaming "tail" chunks that arrive shortly after a
+			// cancel. Non-streaming updates (mode/config/usage/etc.) still
+			// pass through so session metadata stays fresh.
+			if (
+				slot.cancelledAt !== null &&
+				STREAMING_UPDATE_TYPES.has(update.type) &&
+				Date.now() - slot.cancelledAt < CANCEL_GRACE_MS
+			) {
+				return;
+			}
+
 			slot.pendingUpdates.push(update);
 			scheduleFlush();
 		},
@@ -504,6 +546,7 @@ export function useAgentMessages(
 			// Mutate the slot first so background switches observe consistent state.
 			targetSlot.messages = [...targetSlot.messages, userMessage];
 			targetSlot.sendAborted = false;
+			targetSlot.cancelledAt = null;
 			targetSlot.isSending = true;
 			targetSlot.lastUserMessage = content;
 
@@ -618,8 +661,14 @@ export function useAgentMessages(
 		const activeId = activeSessionIdRef.current;
 		const slot = getSlot(activeId);
 		slot.sendAborted = true;
+		slot.cancelledAt = Date.now();
 		slot.isSending = false;
 		slot.lastUserMessage = null;
+		// Purge any already-enqueued streaming chunks that would otherwise
+		// render after we've marked the turn as stopped.
+		slot.pendingUpdates = slot.pendingUpdates.filter(
+			(u) => !STREAMING_UPDATE_TYPES.has(u.type),
+		);
 		setIsSending(false);
 		setLastUserMessage(null);
 	}, [getSlot]);

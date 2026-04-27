@@ -1,5 +1,5 @@
 import * as React from "react";
-import { setIcon } from "obsidian";
+import { LucideIcon, IconActionButton } from "./IconButton";
 import type { AttachedFile } from "../../types/chat";
 
 interface AttachmentStripProps {
@@ -30,25 +30,21 @@ export function AttachmentStrip({ files, onRemove }: AttachmentStripProps) {
 						/>
 					) : (
 						<div className="agent-client-attachment-preview-file">
-							<span
+							<LucideIcon
+								name="file"
 								className="agent-client-attachment-preview-file-icon"
-								ref={(el) => {
-									if (el) setIcon(el, "file");
-								}}
 							/>
 							<span className="agent-client-attachment-preview-file-name">
 								{file.name ?? "file"}
 							</span>
 						</div>
 					)}
-					<button
+					<IconActionButton
 						className="agent-client-attachment-preview-remove"
-						onClick={() => onRemove(file.id)}
+						iconName="x"
 						title="Remove attachment"
-						type="button"
-						ref={(el) => {
-							if (el) setIcon(el, "x");
-						}}
+						ariaLabel="Remove attachment"
+						onClick={() => onRemove(file.id)}
 					/>
 				</div>
 			))}

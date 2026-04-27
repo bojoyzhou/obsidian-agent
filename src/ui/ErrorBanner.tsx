@@ -1,6 +1,6 @@
 import * as React from "react";
 const { useEffect } = React;
-import { setIcon } from "obsidian";
+import { IconActionButton } from "./shared/IconButton";
 import type { ErrorInfo, OverlayVariant } from "../types/errors";
 import { LucideIcon } from "./shared/IconButton";
 import type { IChatViewHost } from "./view-host";
@@ -57,16 +57,11 @@ export function ErrorBanner({
 				<h4 className="agent-client-error-overlay-title">
 					{errorInfo.title}
 				</h4>
-				<button
+				<IconActionButton
 					className="agent-client-error-overlay-close"
+					iconName="x"
+					ariaLabel="Close"
 					onClick={onClose}
-					aria-label="Close"
-					type="button"
-					ref={(el) => {
-						if (el) {
-							setIcon(el, "x");
-						}
-					}}
 				/>
 			</div>
 			<p className="agent-client-error-overlay-message">

@@ -1,6 +1,7 @@
 import * as React from "react";
 const { useRef, useState, useEffect, useCallback, useMemo } = React;
 import { setIcon, Notice } from "obsidian";
+import { IconActionButton } from "./shared/IconButton";
 
 import type AgentClientPlugin from "../plugin";
 import type { IChatViewHost } from "./view-host";
@@ -1015,30 +1016,20 @@ export function InputArea({
 								</span>
 							)}
 						</span>
-						<button
+						<IconActionButton
 							className="agent-client-auto-mention-toggle-btn"
-							onClick={(e) => {
-								const newDisabledState =
-									!mentions.isAutoMentionDisabled;
-								mentions.toggleAutoMention(newDisabledState);
-								const iconName = newDisabledState
-									? "x"
-									: "plus";
-								setIcon(e.currentTarget, iconName);
-							}}
+							iconName={
+								mentions.isAutoMentionDisabled ? "plus" : "x"
+							}
 							title={
 								mentions.isAutoMentionDisabled
 									? "Enable auto-mention"
 									: "Temporarily disable auto-mention"
 							}
-							ref={(el) => {
-								if (el) {
-									const iconName =
-										mentions.isAutoMentionDisabled
-											? "plus"
-											: "x";
-									setIcon(el, iconName);
-								}
+							onClick={() => {
+								mentions.toggleAutoMention(
+									!mentions.isAutoMentionDisabled,
+								);
 							}}
 						/>
 					</div>
