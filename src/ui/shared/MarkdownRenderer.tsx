@@ -157,11 +157,11 @@ export function MarkdownRenderer({ text, plugin }: MarkdownRendererProps) {
 				return;
 			}
 
-			// Markdown internal links
-			const link = target.closest("a.internal-link");
-			if (link) {
+			// Markdown internal links (Obsidian wikilink [[...]] syntax)
+			const internalLink = target.closest("a.internal-link");
+			if (internalLink) {
 				e.preventDefault();
-				const rawHref = link.getAttribute("data-href");
+				const rawHref = internalLink.getAttribute("data-href");
 				if (rawHref) {
 					let href = decodeURIComponent(rawHref);
 
@@ -184,6 +184,80 @@ export function MarkdownRenderer({ text, plugin }: MarkdownRendererProps) {
 						);
 					} else if (!isAbsolutePath(href)) {
 						void plugin.app.workspace.openLinkText(href, "");
+					}
+				}
+				return;
+			}
+
+			// Standard Markdown links [text](path) that point into the vault.
+			// Obsidian's markdown renderer emits these as plain <a> elements
+			// *without* the `internal-link` class, so the block above misses
+			// them. Agents frequently produce such links (e.g., Codex emits
+			// `[Session Log.md](/mnt/c/.../vault/Session Log.md)` on WSL),
+			// which would otherwise open an empty tab in Obsidian.
+			// See upstream issue RAIT-09/obsidian-agent-client#208.
+			const plainLink = target.closest(
+				"a:not(.internal-link):not(.external-link)",
+			);
+			if (plainLink instanceof HTMLAnchorElement) {
+				const rawHref =
+					plainLink.getAttribute("href") ||
+					plainLink.dataset.href ||
+					"";
+				if (!rawHref || rawHref === "#" || rawHref.startsWith("#")) {
+					return;
+				}
+				// Skip well-known external schemes (http/https/mailto/obsidian/…).
+				// File URIs are handled separately below.
+				const schemeMatch = rawHref.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+				const scheme = schemeMatch ? schemeMatch[1].toLowerCase() : "";
+				if (scheme && scheme !== "file") {
+					return;
+				}
+
+				let candidate: string;
+				try {
+					candidate = decodeURIComponent(rawHref);
+				} catch {
+					candidate = rawHref;
+				}
+
+				// Strip `file://` prefix if present (some agents emit URIs).
+				if (candidate.toLowerCase().startsWith("file://")) {
+					candidate = candidate.replace(/^file:\/\/+/i, "/");
+				}
+
+				if (isWslMode && candidate.startsWith("/mnt/")) {
+					candidate = convertWslPathToWindows(candidate);
+				}
+
+				const normalized = candidate.replace(/\\/g, "/");
+				let relativePath: string | null = null;
+
+				if (
+					normalizedVaultBase &&
+					normalized.startsWith(normalizedVaultBase + "/")
+				) {
+					relativePath = normalized.slice(
+						normalizedVaultBase.length + 1,
+					);
+				} else if (!isAbsolutePath(candidate) && !scheme) {
+					// Relative path — let Obsidian resolve against the vault root.
+					relativePath = candidate;
+				}
+
+				if (relativePath) {
+					// Only intercept if the target actually exists in the vault,
+					// otherwise fall through to Obsidian's default behaviour so
+					// external-ish links aren't accidentally swallowed.
+					const file =
+						plugin.app.vault.getAbstractFileByPath(relativePath);
+					if (file) {
+						e.preventDefault();
+						void plugin.app.workspace.openLinkText(
+							relativePath,
+							"",
+						);
 					}
 				}
 			}

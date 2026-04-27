@@ -1854,9 +1854,82 @@ a.agent-client-exploration-item-link:hover {
 	font-size: 14px;
 	color: var(--text-normal);
 	margin-bottom: 4px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+/*
+ * The title text span — truncates with ellipsis when overflowing.
+ * Kept as a child selector so the sibling running badge never gets
+ * clipped by the text's white-space/overflow rules.
+ */
+.agent-client-session-history-item-title > span:not([class]) {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	min-width: 0;
+	flex: 1;
+}
+
+/* ===== Running badge (session history) ===== */
+/*
+ * Marks sessions that currently have an in-flight agent turn. Composed
+ * of a pulsing dot + "Running" label. Uses --color-green to match the
+ * usage indicator's "normal" state and stays readable in both themes.
+ */
+.agent-client-session-history-item-running-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+	padding: 1px 6px;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+	color: var(--color-green, var(--interactive-accent));
+	background: color-mix(
+		in srgb,
+		var(--color-green, var(--interactive-accent)) 15%,
+		transparent
+	);
+	border-radius: 999px;
+	line-height: 1.4;
+}
+
+.agent-client-session-history-item-running-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background-color: var(--color-green, var(--interactive-accent));
+	animation: agent-client-running-pulse 1.4s ease-in-out infinite;
+}
+
+.agent-client-session-history-item-running-label {
+	/* Span is sized by the badge's padding; no extra styling needed. */
+}
+
+@keyframes agent-client-running-pulse {
+	0%,
+	100% {
+		opacity: 0.35;
+		transform: scale(0.9);
+	}
+	50% {
+		opacity: 1;
+		transform: scale(1.1);
+	}
+}
+
+/* Subtle accent on the whole row when a session is running. */
+.agent-client-session-history-item-running {
+	border-color: color-mix(
+		in srgb,
+		var(--color-green, var(--interactive-accent)) 40%,
+		var(--background-modifier-border)
+	);
 }
 
 .agent-client-session-history-item-metadata {
@@ -2481,4 +2554,103 @@ a.agent-client-exploration-item-link:hover {
 .agent-client-error-boundary-retry {
 	padding: 4px 12px;
 	cursor: pointer;
+}
+
+/* ===== Searchable Selector (long model/config lists) ===== */
+/*
+ * Used in InputToolbar when a selector's option count exceeds
+ * SEARCHABLE_PICKER_THRESHOLD. Opens a FuzzySuggestModal on click so
+ * users can type-to-filter instead of scrolling a 50+ entry dropdown
+ * (see upstream issue #229).
+ * Visually matches the inline dropdown selectors above it.
+ */
+.agent-client-searchable-selector-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	height: 20px;
+	max-width: 140px;
+	padding: 0 4px;
+	border: none;
+	background: transparent;
+	border-radius: 4px;
+	color: var(--text-faint);
+	font-size: 11px;
+	cursor: pointer;
+	transition: background-color 0.1s ease;
+	box-shadow: none;
+}
+
+.agent-client-searchable-selector-button:hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-faint);
+}
+
+.agent-client-searchable-selector-button:focus {
+	outline: none;
+	background-color: var(--background-modifier-hover);
+}
+
+.agent-client-searchable-selector-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.agent-client-searchable-selector-icon {
+	display: flex;
+	align-items: center;
+	pointer-events: none;
+	color: var(--text-faint);
+}
+
+.agent-client-searchable-selector-icon svg {
+	width: 12px;
+	height: 12px;
+}
+
+/* Inside a .agent-client-config-selector wrapper we reuse the same button */
+.agent-client-config-selector .agent-client-searchable-selector-button {
+	max-width: 100%;
+}
+
+/* ===== Searchable Picker Modal Items ===== */
+.agent-client-picker-item {
+	padding: 4px 2px;
+	line-height: 1.3;
+}
+
+.agent-client-picker-item-main {
+	display: flex;
+	align-items: baseline;
+	gap: 4px;
+}
+
+.agent-client-picker-item-group {
+	color: var(--text-faint);
+	font-size: 0.85em;
+}
+
+.agent-client-picker-item-label {
+	color: var(--text-normal);
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.agent-client-picker-item-current {
+	color: var(--interactive-accent);
+	font-weight: bold;
+	margin-left: 4px;
+}
+
+.agent-client-picker-item-desc {
+	color: var(--text-muted);
+	font-size: 0.85em;
+	margin-top: 2px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }

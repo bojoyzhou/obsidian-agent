@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import type { AcpClient } from "../acp/acp-client";
 import type { ISettingsAccess } from "../services/settings-service";
 import type {
@@ -796,20 +796,73 @@ export function useSessionHistory(
 	 * Save session messages locally.
 	 * Called when a turn ends (agent response complete).
 	 * Fire-and-forget (does not block UI).
+	 *
+	 * Debounced per-session: rapid successive turns (e.g., tool-heavy agents
+	 * that emit many short replies) coalesce into a single write, preventing
+	 * thrashing of the 50k+ character session JSON file.
+	 * See competitive-analysis-report §3.3.1 / upstream issue #180 bottleneck #7.
 	 */
+	const SAVE_DEBOUNCE_MS = 500;
+	const pendingSaveTimersRef = useRef<
+		Map<string, ReturnType<typeof setTimeout>>
+	>(new Map());
+	const pendingSavePayloadRef = useRef<
+		Map<string, { agentId: string; messages: ChatMessage[] }>
+	>(new Map());
+
+	// Flush any pending saves on unmount so the latest turn isn't lost when
+	// the view is torn down right after a reply finishes.
+	useEffect(() => {
+		const timers = pendingSaveTimersRef.current;
+		const payloads = pendingSavePayloadRef.current;
+		return () => {
+			for (const [sessionId, timer] of timers.entries()) {
+				clearTimeout(timer);
+				const payload = payloads.get(sessionId);
+				if (payload) {
+					// Fire-and-forget synchronous flush.
+					void settingsAccess.saveSessionMessages(
+						sessionId,
+						payload.agentId,
+						payload.messages,
+					);
+				}
+			}
+			timers.clear();
+			payloads.clear();
+		};
+	}, [settingsAccess]);
+
 	const saveSessionMessages = useCallback(
-		(
-			sessionId: string,
-			messages: import("../types/chat").ChatMessage[],
-		) => {
+		(sessionId: string, messages: ChatMessage[]) => {
 			if (!session.agentId || messages.length === 0) return;
 
-			// Fire-and-forget
-			void settingsAccess.saveSessionMessages(
-				sessionId,
-				session.agentId,
+			// Snapshot latest payload for this session; a pending timer will
+			// pick it up on flush.
+			pendingSavePayloadRef.current.set(sessionId, {
+				agentId: session.agentId,
 				messages,
-			);
+			});
+
+			const existing = pendingSaveTimersRef.current.get(sessionId);
+			if (existing) {
+				clearTimeout(existing);
+			}
+
+			const timer = setTimeout(() => {
+				pendingSaveTimersRef.current.delete(sessionId);
+				const payload =
+					pendingSavePayloadRef.current.get(sessionId);
+				pendingSavePayloadRef.current.delete(sessionId);
+				if (!payload) return;
+				void settingsAccess.saveSessionMessages(
+					sessionId,
+					payload.agentId,
+					payload.messages,
+				);
+			}, SAVE_DEBOUNCE_MS);
+
+			pendingSaveTimersRef.current.set(sessionId, timer);
 		},
 		[session.agentId, settingsAccess],
 	);

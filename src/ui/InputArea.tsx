@@ -1082,6 +1082,7 @@ export function InputArea({
 					onConfigOptionChange={onConfigOptionChange}
 					usage={usage}
 					isSessionReady={isSessionReady}
+					app={plugin.app}
 				/>
 			</div>
 		</div>

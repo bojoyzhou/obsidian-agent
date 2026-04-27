@@ -145,6 +145,48 @@ export interface SendPromptResult {
 const DEFAULT_MAX_NOTE_LENGTH = 10000; // Default maximum characters per note
 const DEFAULT_MAX_SELECTION_LENGTH = 10000; // Default maximum characters for selection
 
+/**
+ * System instruction appended to every user message to coax the agent into
+ * emitting math in LaTeX delimiters that Obsidian's markdown renderer can
+ * display. Without this, agents often produce bare LaTeX or fence math in
+ * code blocks, which renders as plain text in chat.
+ *
+ * Ported from upstream RAIT-09/obsidian-agent-client PR #218 (author:
+ * hajimiHenry, merged 2026-04-15). Injecting at prompt layer is cleaner
+ * than post-hoc normalization in the renderer.
+ */
+const MATH_FORMATTING_INSTRUCTION = [
+	"When your response includes mathematical expressions, always format them using standard LaTeX math delimiters that render correctly in Obsidian Markdown.",
+	"Use $...$ for inline math and $$...$$ for display math.",
+	"Do not output bare LaTeX such as A^{-1}, \\begin{pmatrix}...\\end{pmatrix}, or standalone [ ... ] without math delimiters.",
+	"Do not wrap mathematical expressions in code fences or inline backticks unless the user explicitly asks for source code.",
+].join(" ");
+
+/**
+ * Compose the user-facing text block sent to the agent: optional XML
+ * context blocks, the math formatting instruction, and the user message
+ * prefixed by any auto-mention.
+ *
+ * Returning an empty string when both the context and message are empty
+ * lets callers skip emitting a text part altogether.
+ */
+function buildAgentMessageText(
+	message: string,
+	autoMentionPrefix: string,
+	contextBlocks?: string[],
+): string {
+	const userMessage = autoMentionPrefix + message;
+	const parts: string[] = [];
+	if (contextBlocks && contextBlocks.length > 0) {
+		parts.push(contextBlocks.join("\n"));
+	}
+	parts.push(MATH_FORMATTING_INSTRUCTION);
+	if (userMessage) {
+		parts.push(userMessage);
+	}
+	return parts.join("\n\n");
+}
+
 // ============================================================================
 // Shared Helper Functions
 // ============================================================================
@@ -398,14 +440,19 @@ async function preparePromptWithEmbeddedContext(
 		input.isAutoMentionDisabled,
 	);
 
+	const agentMessageText = buildAgentMessageText(
+		input.message,
+		autoMentionPrefix,
+	);
+
 	const agentContent: PromptContent[] = [
 		...resourceBlocks,
 		...autoMentionBlocks,
-		...(input.message || autoMentionPrefix
+		...(agentMessageText
 			? [
 					{
 						type: "text" as const,
-						text: autoMentionPrefix + input.message,
+						text: agentMessageText,
 					},
 				]
 			: []),
@@ -477,14 +524,12 @@ async function preparePromptWithTextContext(
 		input.isAutoMentionDisabled,
 	);
 
-	// Build agent message text (context blocks + auto-mention prefix + original message)
-	const agentMessageText =
-		contextBlocks.length > 0
-			? contextBlocks.join("\n") +
-				"\n\n" +
-				autoMentionPrefix +
-				input.message
-			: autoMentionPrefix + input.message;
+	// Build agent message text (context blocks + math instruction + auto-mention prefix + original message)
+	const agentMessageText = buildAgentMessageText(
+		input.message,
+		autoMentionPrefix,
+		contextBlocks,
+	);
 
 	const agentContent: PromptContent[] = [
 		...(agentMessageText

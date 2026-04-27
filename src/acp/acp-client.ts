@@ -48,8 +48,17 @@ const SESSION_RPC_TIMEOUT_MS = 20_000;
  * Max time to wait for the agent to emit *any* activity (session update OR
  * final response) after a prompt is sent. Agents that hang without sending
  * end_turn would otherwise leave the UI stuck forever.
+ *
+ * Set generously (10 minutes) because:
+ *   - deep-reasoning models (e.g. o1, claude-opus extended-thinking) can
+ *     silently think for several minutes before emitting the first token;
+ *   - long-running tool calls (e.g. multi-step bash builds, repo-wide
+ *     greps) also reset the \"last progress\" clock only when they finish;
+ *   - the 120s default tripped legitimate long-running turns, forcing
+ *     users to resend (see user report 2026-04).
+ * If an agent truly hangs, the user can still press Stop manually.
  */
-const PROMPT_IDLE_TIMEOUT_MS = 120_000;
+const PROMPT_IDLE_TIMEOUT_MS = 600_000;
 
 /**
  * Wrap a promise with a timeout. If `promise` doesn't settle within `ms`,
@@ -112,6 +121,13 @@ export class AcpClient {
 	private isInitializedFlag = false;
 	private currentAgentId: string | null = null;
 	private currentSessionId: string | null = null;
+	/**
+	 * True once the ACP handshake has completed successfully. Used by the
+	 * process "exit" handler to distinguish a crash *during* startup (which
+	 * should surface a loud error to the user, per upstream #233) from a
+	 * clean shutdown triggered by the user or plugin teardown.
+	 */
+	private initHandshakeComplete = false;
 
 	// Callbacks (none — all events flow through onSessionUpdate via AcpHandler)
 
@@ -159,6 +175,11 @@ export class AcpClient {
 		this.logger.log(
 			`[AcpClient] Current state - process: ${!!this.agentProcess}, PID: ${this.agentProcess?.pid}`,
 		);
+
+		// Reset startup-phase tracking so the exit/stderr handlers below
+		// can reliably detect a crash *before* we complete the handshake.
+		this.initHandshakeComplete = false;
+		this.recentStderr = "";
 
 		// Clean up existing process if any (e.g., when switching agents)
 		if (this.agentProcess) {
@@ -329,6 +350,53 @@ export class AcpClient {
 					sessionId: this.currentSessionId ?? "",
 					error: processError,
 				});
+				return;
+			}
+
+			// Handle early exits that happen *before* the ACP handshake
+			// completes. Historically these went unreported, so the UI would
+			// just sit there "Connecting..." until the 20s handshake timeout
+			// — see upstream #233 "fails silently without any error".
+			//
+			// We surface an explicit error immediately, with the tail of
+			// stderr as a diagnostic suggestion.
+			//
+			// Guard: only fire when *this* exiting process is still the
+			// current one. Otherwise a user-initiated disconnect/restart
+			// would race with our `initHandshakeComplete = false` reset and
+			// generate a bogus error for the already-killed old process.
+			if (
+				!this.initHandshakeComplete &&
+				this.agentProcess === agentProcess
+			) {
+				const stderrTail = this.recentStderr
+					.split("\n")
+					.filter((line) => line.trim().length > 0)
+					.slice(-6)
+					.join("\n");
+
+				const isSignalKill =
+					typeof signal === "string" && signal.length > 0;
+				const exitDesc = isSignalKill
+					? `terminated by signal ${signal}`
+					: `exited with code ${code ?? "null"}`;
+
+				const processError: ProcessError = {
+					type: "process_crashed",
+					agentId: config.id,
+					exitCode: code ?? undefined,
+					title: `${config.displayName} failed to start`,
+					message: `The agent process ${exitDesc} before the ACP handshake completed.`,
+					suggestion: stderrTail
+						? `Recent stderr output:\n${stderrTail}`
+						: "Run the command in a terminal to see the full error output, and verify any required API keys/tokens are set in the agent settings.",
+				};
+
+				this.handler.emitSessionUpdate({
+					type: "process_error",
+					sessionId: this.currentSessionId ?? "",
+					error: processError,
+				});
 			}
 		});
 
@@ -417,7 +485,31 @@ export class AcpClient {
 				`[AcpClient] ✅ Connected to agent (protocol v${initResult.protocolVersion})`,
 			);
 
+			// Warn on protocol version mismatch. Most CLIs negotiate down, but
+			// a large gap between what we sent (acp.PROTOCOL_VERSION) and what
+			// the agent accepted suggests a stale CLI binary — the most common
+			// cause of "connects but nothing works" bug reports (see upstream
+			// issues #194, #209, #233). We don't hard-fail since the SDK will
+			// still try to operate; we just surface a hint to the user.
+			if (initResult.protocolVersion !== acp.PROTOCOL_VERSION) {
+				this.logger.warn(
+					`[AcpClient] Protocol version mismatch: client=${acp.PROTOCOL_VERSION}, agent=${initResult.protocolVersion}`,
+				);
+				this.handler.emitSessionUpdate({
+					type: "process_error",
+					sessionId: this.currentSessionId ?? "",
+					error: {
+						type: "protocol_mismatch",
+						agentId: config.id,
+						title: "Agent protocol version mismatch",
+						message: `The agent reports protocol v${initResult.protocolVersion}, but this plugin was built for v${acp.PROTOCOL_VERSION}. Things may still work, but newer features could be missing or broken.`,
+						suggestion: `Update ${config.displayName} to the latest version (e.g. \`npm install -g <package>@latest\`) and restart Obsidian.`,
+					},
+				});
+			}
+
 			this.isInitializedFlag = true;
+			this.initHandshakeComplete = true;
 			this.currentAgentId = config.id;
 
 			return AcpTypeConverter.toInitializeResult(initResult);
@@ -658,6 +750,7 @@ export class AcpClient {
 
 		// Reset initialization state
 		this.isInitializedFlag = false;
+		this.initHandshakeComplete = false;
 		this.currentAgentId = null;
 		this.currentSessionId = null;
 

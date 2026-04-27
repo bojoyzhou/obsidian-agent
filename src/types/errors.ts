@@ -96,7 +96,8 @@ export type ProcessErrorType =
 	| "spawn_failed" // Process spawn failed (ENOENT, etc.)
 	| "command_not_found" // Exit code 127
 	| "process_crashed" // Abnormal termination
-	| "process_timeout"; // Timeout
+	| "process_timeout" // Timeout
+	| "protocol_mismatch"; // Agent's ACP protocol version differs from SDK
 
 /**
  * Process-level error from agent process management.
