@@ -168,12 +168,28 @@ export function ChatPanel({
 	// ============================================================
 	const settings = useSettings(plugin);
 
+	// Session-turn-end callback is wired to useSessionHistory.saveSessionMessages.
+	// We use a ref to break the circular dep (useAgent needs the callback;
+	// useSessionHistory depends on agent's session).
+	const saveSessionMessagesRef = useRef<
+		| ((
+				sessionId: string,
+				messages: import("../types/chat").ChatMessage[],
+		  ) => void)
+		| null
+	>(null);
+
 	const agent = useAgent(
 		acpClient,
 		plugin.settingsService,
 		vaultService,
 		agentCwd,
 		initialAgentId,
+		{
+			onSessionTurnEnd: (sessionId, turnMessages) => {
+				saveSessionMessagesRef.current?.(sessionId, turnMessages);
+			},
+		},
 	);
 
 	const {
@@ -227,6 +243,11 @@ export function ChatPanel({
 		onIgnoreUpdates: agent.setIgnoreUpdates,
 		onClearMessages: agent.clearMessages,
 	});
+
+	// Connect the late-bound persistence callback to sessionHistory now that
+	// it's available. onSessionTurnEnd fires from useAgentMessages whenever
+	// any session (active or background) finishes a turn.
+	saveSessionMessagesRef.current = sessionHistory.saveSessionMessages;
 
 	// ============================================================
 	// Local State
@@ -692,41 +713,36 @@ export function ChatPanel({
 	}, [isSessionReady, session.agentInfo, logger]);
 
 	// ============================================================
-	// Effects - Save Session Messages on Turn End
+	// Effects - System Notification on Turn End
 	// ============================================================
+	// Persistence itself is handled by `onSessionTurnEnd` passed to useAgent,
+	// which fires for both active and background sessions. This effect only
+	// surfaces a desktop notification when the *active* turn ends while the
+	// window is unfocused.
 	const prevIsSendingRef = useRef<boolean>(false);
 
 	useEffect(() => {
 		const wasSending = prevIsSendingRef.current;
 		prevIsSendingRef.current = isSending;
 
-		// Save when turn ends (isSending: true -> false) and has messages
 		if (
 			wasSending &&
 			!isSending &&
 			session.sessionId &&
-			messages.length > 0
+			messages.length > 0 &&
+			settings.enableSystemNotifications &&
+			!document.hasFocus()
 		) {
-			sessionHistory.saveSessionMessages(session.sessionId, messages);
-			logger.log(
-				`[ChatPanel] Session messages saved: ${session.sessionId}`,
-			);
-
-			// System notification on response completion
-			if (settings.enableSystemNotifications && !document.hasFocus()) {
-				new Notification("Agent Client", {
-					body: `${activeAgentLabel} has completed the response.`,
-				});
-			}
+			new Notification("Agent Client", {
+				body: `${activeAgentLabel} has completed the response.`,
+			});
 		}
 	}, [
 		isSending,
 		session.sessionId,
-		messages,
-		sessionHistory.saveSessionMessages,
+		messages.length,
 		settings.enableSystemNotifications,
 		activeAgentLabel,
-		logger,
 	]);
 
 	// ============================================================

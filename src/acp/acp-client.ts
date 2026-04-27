@@ -98,7 +98,6 @@ export class AcpClient {
 			this.permissionManager,
 			this.terminalManager,
 			() => this.currentConfig?.workingDirectory ?? "",
-			() => this.currentSessionId,
 			this.logger,
 		);
 	}
@@ -816,7 +815,9 @@ export class AcpClient {
 	async loadSession(sessionId: string, cwd: string): Promise<SessionResult> {
 		const connection = this.requireConnection();
 
-		// Set sessionId before await so replay updates pass the sessionId filter
+		// Track the most recently loaded session. Used only as a fallback
+		// sessionId for process-level errors that don't carry one — the
+		// per-session dispatch happens in consumers, not via filtering.
 		this.currentSessionId = sessionId;
 
 		try {
@@ -856,7 +857,8 @@ export class AcpClient {
 	): Promise<SessionResult> {
 		const connection = this.requireConnection();
 
-		// Set sessionId before await so any updates pass the sessionId filter
+		// See loadSession — used only as a fallback sessionId for
+		// process-level errors, not for dispatch filtering.
 		this.currentSessionId = sessionId;
 
 		try {

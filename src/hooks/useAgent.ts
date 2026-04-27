@@ -110,6 +110,7 @@ export interface UseAgentReturn {
  * @param vaultAccess - Vault access for reading notes (also serves as IMentionService)
  * @param workingDirectory - Working directory for the session
  * @param initialAgentId - Optional initial agent ID (from view persistence)
+ * @param options - Optional callbacks (e.g. onSessionTurnEnd for persistence)
  */
 export function useAgent(
 	agentClient: AcpClient,
@@ -117,6 +118,12 @@ export function useAgent(
 	vaultAccess: IVaultAccess & IMentionService,
 	workingDirectory: string,
 	initialAgentId?: string,
+	options?: {
+		onSessionTurnEnd?: (
+			sessionId: string,
+			messages: ChatMessage[],
+		) => void;
+	},
 ): UseAgentReturn {
 	// ============================================================
 	// Shared Error State
@@ -142,6 +149,7 @@ export function useAgent(
 		vaultAccess,
 		agentSession.session,
 		setErrorInfo,
+		{ onSessionTurnEnd: options?.onSessionTurnEnd },
 	);
 
 	// ============================================================

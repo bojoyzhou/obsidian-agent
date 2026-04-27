@@ -26,7 +26,6 @@ export class AcpHandler {
 		private permissionManager: PermissionManager,
 		private terminalManager: TerminalManager,
 		private getWorkingDirectory: () => string,
-		private getCurrentSessionId: () => string | null,
 		private logger: Logger,
 	) {}
 
@@ -49,12 +48,15 @@ export class AcpHandler {
 		return () => this.sessionUpdateListeners.delete(callback);
 	}
 
-	/** Emit a session update to all listeners. Filters by current sessionId. */
+	/**
+	 * Emit a session update to all listeners.
+	 *
+	 * Updates carry their own sessionId — consumers are expected to dispatch
+	 * by `update.sessionId` themselves. This enables multi-session UIs where
+	 * a single AcpClient is shared across several on-screen sessions (e.g.,
+	 * switching history tabs while another session is still streaming).
+	 */
 	emitSessionUpdate(update: SessionUpdate): void {
-		const currentId = this.getCurrentSessionId();
-		if (currentId && update.sessionId !== currentId) {
-			return;
-		}
 		for (const listener of this.sessionUpdateListeners) {
 			listener(update);
 		}

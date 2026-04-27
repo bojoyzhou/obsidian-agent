@@ -3,6 +3,20 @@
  *
  * Handles message state, RAF batching for streaming updates,
  * send/receive operations, and permission approve/reject.
+ *
+ * ## Multi-session state model
+ *
+ * A single view may switch between multiple agent sessions (via session
+ * history / new chat). While one session is streaming and the user switches
+ * to another, the background session keeps receiving updates — we don't want
+ * to drop its loading state or its incoming chunks when the user returns.
+ *
+ * To achieve this, per-session state is kept in `sessionStatesRef` (messages,
+ * isSending, lastUserMessage, toolCallIndex, pending RAF buffer, etc.).
+ * Incoming session updates are dispatched by `update.sessionId` and applied
+ * to the matching slot. Only the *active* session's slot is mirrored into
+ * React state so the UI re-renders for it; background slots mutate silently
+ * and are restored on switch.
  */
 
 import * as React from "react";
@@ -86,6 +100,59 @@ export interface UseAgentMessagesReturn {
 	enqueueUpdate: (update: SessionUpdate) => void;
 }
 
+/**
+ * Per-session state slot.
+ *
+ * Each tracked session has one of these, regardless of whether it is
+ * currently the active/visible session. Background sessions accumulate
+ * chunks here and are restored when the user switches back.
+ */
+interface SessionSlot {
+	messages: ChatMessage[];
+	isSending: boolean;
+	lastUserMessage: string | null;
+	toolCallIndex: Map<string, number>;
+	/**
+	 * True when the user has cancelled the in-flight send for this session.
+	 * Any late-arriving prompt() resolution is ignored so state isn't
+	 * clobbered by a stale agent response.
+	 */
+	sendAborted: boolean;
+	/**
+	 * Pending updates to apply on the next RAF flush.
+	 * Background sessions keep buffering; when user switches to this session
+	 * we flush immediately so there's no catch-up flicker.
+	 */
+	pendingUpdates: SessionUpdate[];
+	/**
+	 * When true, incoming updates are dropped (used during session/load
+	 * replay to avoid mixing agent-side history with local-stored messages).
+	 */
+	ignoreUpdates: boolean;
+}
+
+function createEmptySlot(): SessionSlot {
+	return {
+		messages: [],
+		isSending: false,
+		lastUserMessage: null,
+		toolCallIndex: new Map(),
+		sendAborted: false,
+		pendingUpdates: [],
+		ignoreUpdates: false,
+	};
+}
+
+export interface UseAgentMessagesOptions {
+	/**
+	 * Called when a session's turn completes successfully (isSending: true →
+	 * false) with the final message list for that session. Fires for
+	 * background sessions too, so message persistence isn't lost when the
+	 * user switches views while a send is in flight.
+	 */
+	onSessionTurnEnd?: (sessionId: string, messages: ChatMessage[]) => void;
+}
+
 // ============================================================================
 // Hook Implementation
 // ============================================================================
@@ -96,94 +163,194 @@ export function useAgentMessages(
 	vaultAccess: IVaultAccess & IMentionService,
 	session: ChatSession,
 	setErrorInfo: (error: ErrorInfo | null) => void,
+	options?: UseAgentMessagesOptions,
 ): UseAgentMessagesReturn {
+	// Keep the latest onSessionTurnEnd in a ref so sendMessage's closure
+	// always sees the current callback without being re-created.
+	const onSessionTurnEndRef = useRef(options?.onSessionTurnEnd);
+	onSessionTurnEndRef.current = options?.onSessionTurnEnd;
+
 	// ============================================================
-	// Message State
+	// Per-session state map (authoritative store)
+	// ============================================================
+
+	const sessionStatesRef = useRef<Map<string, SessionSlot>>(new Map());
+
+	// Slot for updates that arrive before the session is created, or
+	// detached operations (rare). Indexed by empty string sentinel.
+	const ORPHAN_KEY = "__orphan__";
+
+	const getSlot = useCallback((sessionId: string | null): SessionSlot => {
+		const key = sessionId ?? ORPHAN_KEY;
+		let slot = sessionStatesRef.current.get(key);
+		if (!slot) {
+			slot = createEmptySlot();
+			sessionStatesRef.current.set(key, slot);
+		}
+		return slot;
+	}, []);
+
+	// ============================================================
+	// React-mirrored state for the *active* session
 	// ============================================================
 
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [isSending, setIsSending] = useState(false);
 	const [lastUserMessage, setLastUserMessage] = useState<string | null>(null);
 
-	// Tool call index: toolCallId → message index for O(1) lookup
-	const toolCallIndexRef = useRef<Map<string, number>>(new Map());
-
-	// Ignore updates flag (used during session/load to skip history replay)
-	const ignoreUpdatesRef = useRef(false);
-
-	// When user cancels a send, the in-flight sendPreparedPrompt() still awaits
-	// the agent's response. This ref lets us ignore its eventual result so the
-	// UI state (isSending) reflects the cancel immediately instead of waiting
-	// for the agent to honor the session/cancel notification.
-	const sendAbortedRef = useRef(false);
+	// Track the currently rendered sessionId so streaming flushes only
+	// re-render when relevant.
+	const activeSessionIdRef = useRef<string | null>(session.sessionId);
 
 	// ============================================================
-	// Streaming Update Batching
+	// Session switching: save old slot / restore new slot
 	// ============================================================
 
-	const pendingUpdatesRef = useRef<SessionUpdate[]>([]);
+	useEffect(() => {
+		const newId = session.sessionId;
+		if (activeSessionIdRef.current === newId) return;
+
+		// Save the latest React state back into the slot for the previous
+		// session (so a switch-back later sees the freshest messages even
+		// if RAF had not yet flushed).
+		const prevId = activeSessionIdRef.current;
+		if (prevId) {
+			const prevSlot = sessionStatesRef.current.get(prevId);
+			if (prevSlot) {
+				prevSlot.messages = messages;
+				prevSlot.isSending = isSending;
+				prevSlot.lastUserMessage = lastUserMessage;
+			}
+		}
+
+		activeSessionIdRef.current = newId;
+
+		// Restore the new session's slot into React state.
+		const nextSlot = newId
+			? sessionStatesRef.current.get(newId)
+			: undefined;
+		if (nextSlot) {
+			// Drain any pending updates so the user sees fully up-to-date
+			// state immediately (no RAF catch-up flicker).
+			if (nextSlot.pendingUpdates.length > 0) {
+				let next = nextSlot.messages;
+				for (const u of nextSlot.pendingUpdates) {
+					next = applySingleUpdate(next, u, nextSlot.toolCallIndex);
+				}
+				nextSlot.messages = next;
+				nextSlot.pendingUpdates = [];
+			}
+			setMessages(nextSlot.messages);
+			setIsSending(nextSlot.isSending);
+			setLastUserMessage(nextSlot.lastUserMessage);
+		} else {
+			// Brand new session (not tracked yet) — clean UI state.
+			setMessages([]);
+			setIsSending(false);
+			setLastUserMessage(null);
+		}
+		// Intentionally exclude messages/isSending/lastUserMessage from deps:
+		// the effect must only re-run on sessionId change. We use the latest
+		// values via closure capture at switch-time, which is correct.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [session.sessionId]);
+
+	// ============================================================
+	// Streaming Update Batching (RAF)
+	// ============================================================
+
 	const flushScheduledRef = useRef(false);
 
 	const flushPendingUpdates = useCallback(() => {
 		flushScheduledRef.current = false;
-		const updates = pendingUpdatesRef.current;
-		if (updates.length === 0) return;
-		pendingUpdatesRef.current = [];
+		const activeId = activeSessionIdRef.current;
 
-		setMessages((prev) => {
-			let result = prev;
-			for (const update of updates) {
-				result = applySingleUpdate(
-					result,
-					update,
-					toolCallIndexRef.current,
-				);
+		// Apply pending updates to every slot that has any.
+		// The active slot's result is mirrored to React state; background
+		// slots mutate silently.
+		let activeChanged = false;
+		let activeResult: ChatMessage[] | null = null;
+
+		sessionStatesRef.current.forEach((slot, sessionId) => {
+			if (slot.pendingUpdates.length === 0) return;
+			let next = slot.messages;
+			for (const u of slot.pendingUpdates) {
+				next = applySingleUpdate(next, u, slot.toolCallIndex);
 			}
-			return result;
+			slot.pendingUpdates = [];
+			slot.messages = next;
+
+			if (sessionId === activeId) {
+				activeChanged = true;
+				activeResult = next;
+			}
 		});
+
+		if (activeChanged && activeResult !== null) {
+			setMessages(activeResult);
+		}
 	}, []);
+
+	const scheduleFlush = useCallback(() => {
+		if (!flushScheduledRef.current) {
+			flushScheduledRef.current = true;
+			requestAnimationFrame(flushPendingUpdates);
+		}
+	}, [flushPendingUpdates]);
 
 	const enqueueUpdate = useCallback(
 		(update: SessionUpdate) => {
-			if (ignoreUpdatesRef.current) return;
-			pendingUpdatesRef.current.push(update);
-			if (!flushScheduledRef.current) {
-				flushScheduledRef.current = true;
-				requestAnimationFrame(flushPendingUpdates);
-			}
+			const slot = getSlot(update.sessionId || null);
+			if (slot.ignoreUpdates) return;
+			slot.pendingUpdates.push(update);
+			scheduleFlush();
 		},
-		[flushPendingUpdates],
+		[getSlot, scheduleFlush],
 	);
 
 	// Clean up on unmount
 	useEffect(() => {
 		return () => {
-			pendingUpdatesRef.current = [];
 			flushScheduledRef.current = false;
-			toolCallIndexRef.current.clear();
+			sessionStatesRef.current.clear();
 		};
 	}, []);
 
 	// ============================================================
-	// Message Operations
+	// Message Operations (all act on the currently active session)
 	// ============================================================
 
-	const addMessage = useCallback((message: ChatMessage): void => {
-		setMessages((prev) => [...prev, message]);
-	}, []);
-
-	const setIgnoreUpdates = useCallback((ignore: boolean): void => {
-		ignoreUpdatesRef.current = ignore;
-	}, []);
+	const setIgnoreUpdates = useCallback(
+		(ignore: boolean): void => {
+			const slot = getSlot(activeSessionIdRef.current);
+			slot.ignoreUpdates = ignore;
+		},
+		[getSlot],
+	);
 
 	const clearMessages = useCallback((): void => {
-		sendAbortedRef.current = true;
+		const activeId = activeSessionIdRef.current;
+		const slot = getSlot(activeId);
+
+		// Preserve the live in-memory state when a stream is still running.
+		// This protects the "switch away → agent still replies → switch back"
+		// path against stale clears from session-history restore flows.
+		if (slot.isSending) {
+			return;
+		}
+
+		slot.sendAborted = true;
+		slot.messages = [];
+		slot.toolCallIndex.clear();
+		slot.lastUserMessage = null;
+		slot.isSending = false;
+		slot.pendingUpdates = [];
+
 		setMessages([]);
-		toolCallIndexRef.current.clear();
 		setLastUserMessage(null);
 		setIsSending(false);
 		setErrorInfo(null);
-	}, [setErrorInfo]);
+	}, [getSlot, setErrorInfo]);
 
 	const setInitialMessages = useCallback(
 		(
@@ -203,22 +370,45 @@ export function useAgentMessages(
 				timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
 			}));
 
+			const activeId = activeSessionIdRef.current;
+			const slot = getSlot(activeId);
+			slot.messages = chatMessages;
+			slot.toolCallIndex.clear();
+			rebuildToolCallIndex(chatMessages, slot.toolCallIndex);
+			slot.isSending = false;
+			slot.pendingUpdates = [];
+
 			setMessages(chatMessages);
-			rebuildToolCallIndex(chatMessages, toolCallIndexRef.current);
 			setIsSending(false);
 			setErrorInfo(null);
 		},
-		[setErrorInfo],
+		[getSlot, setErrorInfo],
 	);
 
 	const setMessagesFromLocal = useCallback(
 		(localMessages: ChatMessage[]): void => {
+			const activeId = activeSessionIdRef.current;
+			const slot = getSlot(activeId);
+
+			// If this session is currently streaming in memory (the user
+			// switched away and came back while the turn is still running),
+			// keep the in-memory state — the local-storage copy is
+			// necessarily stale (persistence happens only at turn end).
+			if (slot.isSending) {
+				return;
+			}
+
+			slot.messages = localMessages;
+			slot.toolCallIndex.clear();
+			rebuildToolCallIndex(localMessages, slot.toolCallIndex);
+			slot.isSending = false;
+			slot.pendingUpdates = [];
+
 			setMessages(localMessages);
-			rebuildToolCallIndex(localMessages, toolCallIndexRef.current);
 			setIsSending(false);
 			setErrorInfo(null);
 		},
-		[setErrorInfo],
+		[getSlot, setErrorInfo],
 	);
 
 	const clearError = useCallback((): void => {
@@ -239,6 +429,12 @@ export function useAgentMessages(
 				});
 				return;
 			}
+
+			// Capture the session this send belongs to — subsequent
+			// state writes must target this slot even if the user has
+			// switched to a different session by the time the agent replies.
+			const targetSessionId = session.sessionId;
+			const targetSlot = getSlot(targetSessionId);
 
 			const settings = settingsAccess.getSnapshot();
 
@@ -304,16 +500,24 @@ export function useAgentMessages(
 				content: userMessageContent,
 				timestamp: new Date(),
 			};
-			addMessage(userMessage);
 
-			sendAbortedRef.current = false;
-			setIsSending(true);
-			setLastUserMessage(content);
+			// Mutate the slot first so background switches observe consistent state.
+			targetSlot.messages = [...targetSlot.messages, userMessage];
+			targetSlot.sendAborted = false;
+			targetSlot.isSending = true;
+			targetSlot.lastUserMessage = content;
+
+			// Mirror to React state only if this slot is still active.
+			if (activeSessionIdRef.current === targetSessionId) {
+				setMessages(targetSlot.messages);
+				setIsSending(true);
+				setLastUserMessage(content);
+			}
 
 			try {
 				const result = await sendPreparedPrompt(
 					{
-						sessionId: session.sessionId,
+						sessionId: targetSessionId,
 						agentContent: prepared.agentContent,
 						displayContent: prepared.displayContent,
 						authMethods: session.authMethods,
@@ -321,40 +525,70 @@ export function useAgentMessages(
 					agentClient,
 				);
 
-				// If the user cancelled while we were awaiting the agent,
-				// the UI has already been reset by cancelSend(). Don't let
-				// the late-arriving result clobber state or surface errors.
-				if (sendAbortedRef.current) {
+				if (targetSlot.sendAborted) {
+					// User cancelled this send; UI already reset.
 					return;
 				}
 
 				if (result.success) {
-					setIsSending(false);
-					setLastUserMessage(null);
-				} else {
-					setIsSending(false);
-					setErrorInfo(
-						result.error
-							? {
-									title: result.error.title,
-									message: result.error.message,
-									suggestion: result.error.suggestion,
-								}
-							: {
-									title: "Send Message Failed",
-									message: "Failed to send message",
-								},
+					// Flush any pending RAF-buffered updates for this slot
+					// so the persisted messages reflect the full turn.
+					if (targetSlot.pendingUpdates.length > 0) {
+						let next = targetSlot.messages;
+						for (const u of targetSlot.pendingUpdates) {
+							next = applySingleUpdate(
+								next,
+								u,
+								targetSlot.toolCallIndex,
+							);
+						}
+						targetSlot.messages = next;
+						targetSlot.pendingUpdates = [];
+						if (activeSessionIdRef.current === targetSessionId) {
+							setMessages(next);
+						}
+					}
+					targetSlot.isSending = false;
+					targetSlot.lastUserMessage = null;
+					if (activeSessionIdRef.current === targetSessionId) {
+						setIsSending(false);
+						setLastUserMessage(null);
+					}
+					// Persist for this session (even if user has switched away).
+					onSessionTurnEndRef.current?.(
+						targetSessionId,
+						targetSlot.messages,
 					);
+				} else {
+					targetSlot.isSending = false;
+					if (activeSessionIdRef.current === targetSessionId) {
+						setIsSending(false);
+						setErrorInfo(
+							result.error
+								? {
+										title: result.error.title,
+										message: result.error.message,
+										suggestion: result.error.suggestion,
+									}
+								: {
+										title: "Send Message Failed",
+										message: "Failed to send message",
+									},
+						);
+					}
 				}
 			} catch (error) {
-				if (sendAbortedRef.current) {
+				if (targetSlot.sendAborted) {
 					return;
 				}
-				setIsSending(false);
-				setErrorInfo({
-					title: "Send Message Failed",
-					message: `Failed to send message: ${error instanceof Error ? error.message : String(error)}`,
-				});
+				targetSlot.isSending = false;
+				if (activeSessionIdRef.current === targetSessionId) {
+					setIsSending(false);
+					setErrorInfo({
+						title: "Send Message Failed",
+						message: `Failed to send message: ${error instanceof Error ? error.message : String(error)}`,
+					});
+				}
 			}
 		},
 		[
@@ -365,25 +599,30 @@ export function useAgentMessages(
 			session.authMethods,
 			session.promptCapabilities,
 			shouldConvertToWsl,
-			addMessage,
+			getSlot,
 			setErrorInfo,
 		],
 	);
 
 	/**
-	 * Cancel the in-flight send (if any) from the UI's perspective.
+	 * Cancel the in-flight send for the *currently active* session.
 	 *
 	 * The ACP `session/cancel` notification is fire-and-forget — some agents
 	 * don't promptly respond, which would otherwise leave `isSending` stuck
 	 * as true until the `connection.prompt()` promise eventually resolves.
-	 * This resets UI state immediately and marks any pending result as
-	 * aborted so it won't re-enable `isSending` or surface a stale error.
+	 * This resets UI state immediately and marks the send as aborted so a
+	 * late-arriving result won't re-enable `isSending` or surface a stale
+	 * error.
 	 */
 	const cancelSend = useCallback((): void => {
-		sendAbortedRef.current = true;
+		const activeId = activeSessionIdRef.current;
+		const slot = getSlot(activeId);
+		slot.sendAborted = true;
+		slot.isSending = false;
+		slot.lastUserMessage = null;
 		setIsSending(false);
 		setLastUserMessage(null);
-	}, []);
+	}, [getSlot]);
 
 	// ============================================================
 	// Permission State & Operations
