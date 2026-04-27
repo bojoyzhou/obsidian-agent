@@ -47,6 +47,12 @@ export interface UseAgentReturn {
 	isSending: boolean;
 	lastUserMessage: string | null;
 
+	/**
+	 * Session IDs currently running an agent turn.
+	 * Forwarded from useAgentMessages; see its documentation for details.
+	 */
+	busySessionIds: ReadonlySet<string>;
+
 	// Combined error
 	errorInfo: ErrorInfo | null;
 
@@ -209,6 +215,7 @@ export function useAgent(
 			messages: agentMessages.messages,
 			isSending: agentMessages.isSending,
 			lastUserMessage: agentMessages.lastUserMessage,
+			busySessionIds: agentMessages.busySessionIds,
 
 			// Combined error
 			errorInfo,
@@ -248,6 +255,7 @@ export function useAgent(
 			agentMessages.messages,
 			agentMessages.isSending,
 			agentMessages.lastUserMessage,
+			agentMessages.busySessionIds,
 			errorInfo,
 			agentSession.createSession,
 			agentSession.restartSession,

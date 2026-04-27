@@ -70,6 +70,19 @@ export interface UseAgentMessagesReturn {
 	isSending: boolean;
 	lastUserMessage: string | null;
 
+	/**
+	 * Set of session IDs that currently have an in-flight agent turn.
+	 *
+	 * Updated whenever any (active or background) session transitions
+	 * between idle ↔ busy. Useful for UI surfaces that list multiple
+	 * sessions (e.g. the session history modal) and need to show a
+	 * "running" badge per entry.
+	 *
+	 * Identity is stable while membership is unchanged — consumers may
+	 * use it as a React dep without causing spurious re-renders.
+	 */
+	busySessionIds: ReadonlySet<string>;
+
 	// Message operations
 	sendMessage: (
 		content: string,
@@ -228,6 +241,54 @@ export function useAgentMessages(
 	const [isSending, setIsSending] = useState(false);
 	const [lastUserMessage, setLastUserMessage] = useState<string | null>(null);
 
+	/**
+	 * Session IDs with an in-flight turn. Mirrored from per-slot
+	 * `isSending` so React consumers (e.g. session history modal) can
+	 * highlight running sessions without poking at the ref map directly.
+	 *
+	 * Kept as an immutable Set — every flip allocates a fresh instance so
+	 * shallow equality still triggers React updates while the *identity*
+	 * remains stable when membership is unchanged (see setSessionBusy).
+	 */
+	const [busySessionIds, setBusySessionIds] = useState<ReadonlySet<string>>(
+		() => new Set<string>(),
+	);
+
+	/**
+	 * Atomically flip a session's busy flag on both the per-slot store
+	 * and the React-visible `busySessionIds` set. Always call this
+	 * instead of mutating `slot.isSending` directly when the change
+	 * should be observable from outside this hook (i.e. every time).
+	 *
+	 * The slot mirror stays in sync with React state. Both the active
+	 * and background sessions flow through here.
+	 */
+	const setSessionBusy = useCallback(
+		(sessionId: string | null | undefined, busy: boolean) => {
+			// Track the slot regardless (so cancelSend, clearMessages etc.
+			// still reset it even for orphan/legacy paths), but only
+			// expose *real* session IDs through React state — the empty
+			// string / null sentinel is an internal bookkeeping detail.
+			const slot = getSlot(sessionId ?? null);
+			slot.isSending = busy;
+
+			if (!sessionId) return;
+
+			setBusySessionIds((prev) => {
+				const has = prev.has(sessionId);
+				if (has === busy) return prev;
+				const next = new Set(prev);
+				if (busy) {
+					next.add(sessionId);
+				} else {
+					next.delete(sessionId);
+				}
+				return next;
+			});
+		},
+		[getSlot],
+	);
+
 	// Track the currently rendered sessionId so streaming flushes only
 	// re-render when relevant.
 	const activeSessionIdRef = useRef<string | null>(session.sessionId);
@@ -385,14 +446,14 @@ export function useAgentMessages(
 		slot.messages = [];
 		slot.toolCallIndex.clear();
 		slot.lastUserMessage = null;
-		slot.isSending = false;
+		setSessionBusy(activeId, false);
 		slot.pendingUpdates = [];
 
 		setMessages([]);
 		setLastUserMessage(null);
 		setIsSending(false);
 		setErrorInfo(null);
-	}, [getSlot, setErrorInfo]);
+	}, [getSlot, setErrorInfo, setSessionBusy]);
 
 	const setInitialMessages = useCallback(
 		(
@@ -417,14 +478,14 @@ export function useAgentMessages(
 			slot.messages = chatMessages;
 			slot.toolCallIndex.clear();
 			rebuildToolCallIndex(chatMessages, slot.toolCallIndex);
-			slot.isSending = false;
+			setSessionBusy(activeId, false);
 			slot.pendingUpdates = [];
 
 			setMessages(chatMessages);
 			setIsSending(false);
 			setErrorInfo(null);
 		},
-		[getSlot, setErrorInfo],
+		[getSlot, setErrorInfo, setSessionBusy],
 	);
 
 	const setMessagesFromLocal = useCallback(
@@ -443,14 +504,14 @@ export function useAgentMessages(
 			slot.messages = localMessages;
 			slot.toolCallIndex.clear();
 			rebuildToolCallIndex(localMessages, slot.toolCallIndex);
-			slot.isSending = false;
+			setSessionBusy(activeId, false);
 			slot.pendingUpdates = [];
 
 			setMessages(localMessages);
 			setIsSending(false);
 			setErrorInfo(null);
 		},
-		[getSlot, setErrorInfo],
+		[getSlot, setErrorInfo, setSessionBusy],
 	);
 
 	const clearError = useCallback((): void => {
@@ -547,7 +608,7 @@ export function useAgentMessages(
 			targetSlot.messages = [...targetSlot.messages, userMessage];
 			targetSlot.sendAborted = false;
 			targetSlot.cancelledAt = null;
-			targetSlot.isSending = true;
+			setSessionBusy(targetSessionId, true);
 			targetSlot.lastUserMessage = content;
 
 			// Mirror to React state only if this slot is still active.
@@ -591,7 +652,7 @@ export function useAgentMessages(
 							setMessages(next);
 						}
 					}
-					targetSlot.isSending = false;
+					setSessionBusy(targetSessionId, false);
 					targetSlot.lastUserMessage = null;
 					if (activeSessionIdRef.current === targetSessionId) {
 						setIsSending(false);
@@ -603,7 +664,7 @@ export function useAgentMessages(
 						targetSlot.messages,
 					);
 				} else {
-					targetSlot.isSending = false;
+					setSessionBusy(targetSessionId, false);
 					if (activeSessionIdRef.current === targetSessionId) {
 						setIsSending(false);
 						setErrorInfo(
@@ -624,7 +685,7 @@ export function useAgentMessages(
 				if (targetSlot.sendAborted) {
 					return;
 				}
-				targetSlot.isSending = false;
+				setSessionBusy(targetSessionId, false);
 				if (activeSessionIdRef.current === targetSessionId) {
 					setIsSending(false);
 					setErrorInfo({
@@ -644,6 +705,7 @@ export function useAgentMessages(
 			shouldConvertToWsl,
 			getSlot,
 			setErrorInfo,
+			setSessionBusy,
 		],
 	);
 
@@ -662,7 +724,7 @@ export function useAgentMessages(
 		const slot = getSlot(activeId);
 		slot.sendAborted = true;
 		slot.cancelledAt = Date.now();
-		slot.isSending = false;
+		setSessionBusy(activeId, false);
 		slot.lastUserMessage = null;
 		// Purge any already-enqueued streaming chunks that would otherwise
 		// render after we've marked the turn as stopped.
@@ -671,7 +733,7 @@ export function useAgentMessages(
 		);
 		setIsSending(false);
 		setLastUserMessage(null);
-	}, [getSlot]);
+	}, [getSlot, setSessionBusy]);
 
 	// ============================================================
 	// Permission State & Operations
@@ -733,6 +795,7 @@ export function useAgentMessages(
 		messages,
 		isSending,
 		lastUserMessage,
+		busySessionIds,
 		sendMessage,
 		cancelSend,
 		clearMessages,

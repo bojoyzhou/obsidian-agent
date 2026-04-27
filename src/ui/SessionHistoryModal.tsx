@@ -204,6 +204,14 @@ interface SessionHistoryContentProps {
 	/** Set of session IDs that have local data (for filtering) */
 	localSessionIds: Set<string>;
 
+	/**
+	 * Session IDs with an in-flight agent turn. Used to mark "running"
+	 * sessions in the list so users can tell at a glance which chats
+	 * still have work executing (e.g. background sessions they switched
+	 * away from mid-reply).
+	 */
+	busySessionIds: ReadonlySet<string>;
+
 	/** Whether the agent is ready (initialized) */
 	isAgentReady: boolean;
 
@@ -390,6 +398,7 @@ function SessionItem({
 	canRestore,
 	canFork,
 	currentCwd,
+	isRunning,
 	onRestoreSession,
 	onForkSession,
 	onDeleteSession,
@@ -400,6 +409,7 @@ function SessionItem({
 	canRestore: boolean;
 	canFork: boolean;
 	currentCwd: string;
+	isRunning: boolean;
 	onRestoreSession: (sessionId: string, cwd: string) => Promise<void>;
 	onForkSession: (sessionId: string, cwd: string) => Promise<void>;
 	onDeleteSession: (sessionId: string) => void | Promise<void>;
@@ -425,9 +435,25 @@ function SessionItem({
 	}, [session.sessionId, onEditTitle]);
 
 	return (
-		<div className="agent-client-session-history-item">
+		<div
+			className={`agent-client-session-history-item${
+				isRunning ? " agent-client-session-history-item-running" : ""
+			}`}
+		>
 			<div className="agent-client-session-history-item-content">
 				<div className="agent-client-session-history-item-title">
+					{isRunning && (
+						<span
+							className="agent-client-session-history-item-running-badge"
+							title="This session is currently running an agent turn"
+							aria-label="Running"
+						>
+							<span className="agent-client-session-history-item-running-dot" />
+							<span className="agent-client-session-history-item-running-label">
+								Running
+							</span>
+						</span>
+					)}
 					<span>
 						{truncateTitle(session.title ?? "Untitled Session")}
 					</span>
@@ -505,6 +531,7 @@ function SessionHistoryContent({
 	canFork,
 	isUsingLocalSessions,
 	localSessionIds,
+	busySessionIds,
 	isAgentReady,
 	debugMode,
 	onRestoreSession,
@@ -578,6 +605,24 @@ function SessionHistoryContent({
 		}
 		return sessions.filter((s) => localSessionIds.has(s.sessionId));
 	}, [sessions, isUsingLocalSessions, hideNonLocalSessions, localSessionIds]);
+
+	// Reorder so running sessions sink to the top — they're the most
+	// time-sensitive entries (user likely wants to restore them to see
+	// the in-progress reply). Uses a stable sort so the remainder keeps
+	// the upstream updatedAt order.
+	const orderedSessions = React.useMemo(() => {
+		if (busySessionIds.size === 0) return filteredSessions;
+		const running: SessionInfo[] = [];
+		const idle: SessionInfo[] = [];
+		for (const s of filteredSessions) {
+			if (busySessionIds.has(s.sessionId)) {
+				running.push(s);
+			} else {
+				idle.push(s);
+			}
+		}
+		return running.concat(idle);
+	}, [filteredSessions, busySessionIds]);
 
 	// Show preparing message if agent is not ready
 	if (!isAgentReady) {
@@ -680,14 +725,14 @@ function SessionHistoryContent({
 					)}
 
 					{/* Loading state */}
-					{!error && loading && filteredSessions.length === 0 && (
+					{!error && loading && orderedSessions.length === 0 && (
 						<div className="agent-client-session-history-loading">
 							<p>Loading sessions...</p>
 						</div>
 					)}
 
 					{/* Empty state */}
-					{!error && !loading && filteredSessions.length === 0 && (
+					{!error && !loading && orderedSessions.length === 0 && (
 						<div className="agent-client-session-history-empty">
 							<p className="agent-client-session-history-empty-text">
 								No previous sessions
@@ -696,15 +741,18 @@ function SessionHistoryContent({
 					)}
 
 					{/* Session list */}
-					{!error && filteredSessions.length > 0 && (
+					{!error && orderedSessions.length > 0 && (
 						<div className="agent-client-session-history-list">
-							{filteredSessions.map((session) => (
+							{orderedSessions.map((session) => (
 								<SessionItem
 									key={session.sessionId}
 									session={session}
 									canRestore={canRestore}
 									canFork={canFork}
 									currentCwd={currentCwd}
+									isRunning={busySessionIds.has(
+										session.sessionId,
+									)}
 									onRestoreSession={onRestoreSession}
 									onForkSession={onForkSession}
 									onDeleteSession={
