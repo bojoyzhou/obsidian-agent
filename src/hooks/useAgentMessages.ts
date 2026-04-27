@@ -61,6 +61,8 @@ export interface UseAgentMessagesReturn {
 		content: string,
 		options: SendMessageOptions,
 	) => Promise<void>;
+	/** Immediately reset sending state; used when user cancels generation */
+	cancelSend: () => void;
 	clearMessages: () => void;
 	setInitialMessages: (
 		history: Array<{
@@ -108,6 +110,12 @@ export function useAgentMessages(
 
 	// Ignore updates flag (used during session/load to skip history replay)
 	const ignoreUpdatesRef = useRef(false);
+
+	// When user cancels a send, the in-flight sendPreparedPrompt() still awaits
+	// the agent's response. This ref lets us ignore its eventual result so the
+	// UI state (isSending) reflects the cancel immediately instead of waiting
+	// for the agent to honor the session/cancel notification.
+	const sendAbortedRef = useRef(false);
 
 	// ============================================================
 	// Streaming Update Batching
@@ -169,6 +177,7 @@ export function useAgentMessages(
 	}, []);
 
 	const clearMessages = useCallback((): void => {
+		sendAbortedRef.current = true;
 		setMessages([]);
 		toolCallIndexRef.current.clear();
 		setLastUserMessage(null);
@@ -297,6 +306,7 @@ export function useAgentMessages(
 			};
 			addMessage(userMessage);
 
+			sendAbortedRef.current = false;
 			setIsSending(true);
 			setLastUserMessage(content);
 
@@ -310,6 +320,13 @@ export function useAgentMessages(
 					},
 					agentClient,
 				);
+
+				// If the user cancelled while we were awaiting the agent,
+				// the UI has already been reset by cancelSend(). Don't let
+				// the late-arriving result clobber state or surface errors.
+				if (sendAbortedRef.current) {
+					return;
+				}
 
 				if (result.success) {
 					setIsSending(false);
@@ -330,6 +347,9 @@ export function useAgentMessages(
 					);
 				}
 			} catch (error) {
+				if (sendAbortedRef.current) {
+					return;
+				}
 				setIsSending(false);
 				setErrorInfo({
 					title: "Send Message Failed",
@@ -349,6 +369,21 @@ export function useAgentMessages(
 			setErrorInfo,
 		],
 	);
+
+	/**
+	 * Cancel the in-flight send (if any) from the UI's perspective.
+	 *
+	 * The ACP `session/cancel` notification is fire-and-forget — some agents
+	 * don't promptly respond, which would otherwise leave `isSending` stuck
+	 * as true until the `connection.prompt()` promise eventually resolves.
+	 * This resets UI state immediately and marks any pending result as
+	 * aborted so it won't re-enable `isSending` or surface a stale error.
+	 */
+	const cancelSend = useCallback((): void => {
+		sendAbortedRef.current = true;
+		setIsSending(false);
+		setLastUserMessage(null);
+	}, []);
 
 	// ============================================================
 	// Permission State & Operations
@@ -411,6 +446,7 @@ export function useAgentMessages(
 		isSending,
 		lastUserMessage,
 		sendMessage,
+		cancelSend,
 		clearMessages,
 		setInitialMessages,
 		setMessagesFromLocal,

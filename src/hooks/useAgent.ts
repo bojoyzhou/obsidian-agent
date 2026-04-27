@@ -166,6 +166,28 @@ export function useAgent(
 	}, [agentClient, handleSessionUpdate]);
 
 	// ============================================================
+	// Unified Cancel Operation
+	// ============================================================
+
+	/**
+	 * Cancel the current operation.
+	 *
+	 * This both:
+	 *   1. Resets UI state immediately (cancelSend) so `isSending` flips
+	 *      to false without waiting for the agent to honor the cancel.
+	 *   2. Sends the ACP `session/cancel` notification so the agent stops
+	 *      any ongoing work on its side.
+	 *
+	 * Without (1), some agents that don't promptly respond to
+	 * `session/cancel` would leave the UI stuck in the "sending" state,
+	 * making the stop button appear broken.
+	 */
+	const cancelOperation = useCallback(async () => {
+		agentMessages.cancelSend();
+		await agentSession.cancelOperation();
+	}, [agentMessages.cancelSend, agentSession.cancelOperation]);
+
+	// ============================================================
 	// Return
 	// ============================================================
 
@@ -188,7 +210,7 @@ export function useAgent(
 			restartSession: agentSession.restartSession,
 			closeSession: agentSession.closeSession,
 			forceRestartAgent: agentSession.forceRestartAgent,
-			cancelOperation: agentSession.cancelOperation,
+			cancelOperation,
 			getAvailableAgents: agentSession.getAvailableAgents,
 			updateSessionFromLoad: agentSession.updateSessionFromLoad,
 
@@ -223,7 +245,7 @@ export function useAgent(
 			agentSession.restartSession,
 			agentSession.closeSession,
 			agentSession.forceRestartAgent,
-			agentSession.cancelOperation,
+			cancelOperation,
 			agentSession.getAvailableAgents,
 			agentSession.updateSessionFromLoad,
 			agentSession.setMode,
