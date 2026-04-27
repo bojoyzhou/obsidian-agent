@@ -17,7 +17,8 @@ import type {
 } from "../types/session";
 import type { AcpClient } from "../acp/acp-client";
 import type { ISettingsAccess } from "../services/settings-service";
-import type { ErrorInfo } from "../types/errors";
+import { AcpErrorCode, type ErrorInfo } from "../types/errors";
+import { extractErrorCode } from "../utils/error-utils";
 import {
 	type AgentDisplayInfo,
 	getDefaultAgentId,
@@ -219,8 +220,33 @@ export function useAgentSession(
 						? await agentClient.initialize(agentConfig)
 						: null;
 
-				const sessionResult =
-					await agentClient.newSession(effectiveCwd);
+				const allAuthMethods = initResult?.authMethods ?? [];
+				// Skip env_var methods that need a pre-set environment variable
+				// the user hasn't provided. Pick the first non-env_var login method
+				// for automatic retry (e.g., qodercli-login uses local OAuth state).
+				const autoRetryMethods = allAuthMethods.filter(
+					(m) => (m as { type?: string }).type !== "env_var",
+				);
+				let sessionResult;
+				try {
+					sessionResult = await agentClient.newSession(effectiveCwd);
+				} catch (error) {
+					if (
+						extractErrorCode(error) ===
+							AcpErrorCode.AUTHENTICATION_REQUIRED &&
+						autoRetryMethods.length >= 1
+					) {
+						const authOk = await agentClient.authenticate(
+							autoRetryMethods[0].id,
+						);
+						if (!authOk) {
+							throw error;
+						}
+						sessionResult = await agentClient.newSession(effectiveCwd);
+					} else {
+						throw error;
+					}
+				}
 
 				setSession((prev) => ({
 					...prev,

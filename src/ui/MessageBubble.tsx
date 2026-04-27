@@ -1,6 +1,6 @@
 import * as React from "react";
-const { useState, useCallback } = React;
-import { setIcon } from "obsidian";
+const { useState, useCallback, useMemo } = React;
+import { FileSystemAdapter, setIcon } from "obsidian";
 import type { ChatMessage, MessageContent } from "../types/chat";
 import type { AcpClient } from "../acp/acp-client";
 import type AgentClientPlugin from "../plugin";
@@ -8,6 +8,7 @@ import { MarkdownRenderer } from "./shared/MarkdownRenderer";
 import { TerminalBlock } from "./TerminalBlock";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { LucideIcon } from "./shared/IconButton";
+import { toRelativePath } from "../utils/paths";
 
 // ---------------------------------------------------------------------------
 // TextWithMentions (internal helper)
@@ -343,45 +344,259 @@ function CopyButton({ contents }: { contents: MessageContent[] }) {
 	);
 }
 
-/**
- * Group consecutive image/resource_link contents together for horizontal display.
- * Non-attachment contents are wrapped individually.
- */
-function groupContent(
-	contents: MessageContent[],
-): Array<
+const EXPLORATION_KINDS = new Set(["read", "search", "fetch", "think"]);
+
+type ExplorationToolCall = Extract<MessageContent, { type: "tool_call" }>;
+
+function isExplorationToolCall(c: MessageContent): c is ExplorationToolCall {
+	if (c.type !== "tool_call") return false;
+	if (!c.kind || !EXPLORATION_KINDS.has(c.kind)) return false;
+	if (c.permissionRequest) return false;
+	return true;
+}
+
+type ContentGroup =
 	| { type: "attachments"; items: MessageContent[] }
 	| { type: "single"; item: MessageContent }
-> {
-	const groups: Array<
-		| { type: "attachments"; items: MessageContent[] }
-		| { type: "single"; item: MessageContent }
-	> = [];
+	| { type: "exploration"; items: ExplorationToolCall[] };
 
-	let currentAttachmentGroup: MessageContent[] = [];
+/**
+ * Group consecutive image/resource_link contents into attachment strips,
+ * and group consecutive read-only tool calls (read/search/fetch/think) into
+ * a collapsible exploration block to de-emphasize them visually.
+ */
+function groupContent(contents: MessageContent[]): ContentGroup[] {
+	const groups: ContentGroup[] = [];
+	let attachBuf: MessageContent[] = [];
+	let exploreBuf: ExplorationToolCall[] = [];
+
+	const flushAttach = () => {
+		if (attachBuf.length > 0) {
+			groups.push({ type: "attachments", items: attachBuf });
+			attachBuf = [];
+		}
+	};
+	const flushExplore = () => {
+		if (exploreBuf.length === 0) return;
+		if (exploreBuf.length >= 2) {
+			groups.push({ type: "exploration", items: exploreBuf });
+		} else {
+			for (const item of exploreBuf) groups.push({ type: "single", item });
+		}
+		exploreBuf = [];
+	};
 
 	for (const content of contents) {
 		if (content.type === "image" || content.type === "resource_link") {
-			currentAttachmentGroup.push(content);
+			flushExplore();
+			attachBuf.push(content);
+		} else if (isExplorationToolCall(content)) {
+			flushAttach();
+			exploreBuf.push(content);
 		} else {
-			// Flush any pending attachment group
-			if (currentAttachmentGroup.length > 0) {
-				groups.push({
-					type: "attachments",
-					items: currentAttachmentGroup,
-				});
-				currentAttachmentGroup = [];
-			}
+			flushAttach();
+			flushExplore();
 			groups.push({ type: "single", item: content });
 		}
 	}
 
-	// Flush remaining attachments
-	if (currentAttachmentGroup.length > 0) {
-		groups.push({ type: "attachments", items: currentAttachmentGroup });
-	}
-
+	flushAttach();
+	flushExplore();
 	return groups;
+}
+
+function getExplorationIcon(kind?: string): string {
+	switch (kind) {
+		case "read":
+			return "book-open";
+		case "search":
+			return "search";
+		case "fetch":
+			return "globe";
+		case "think":
+			return "message-circle-more";
+		default:
+			return "hammer";
+	}
+}
+
+function describeExplorationItem(item: ExplorationToolCall): {
+	param?: string;
+	openPath?: string;
+} {
+	const raw = item.rawInput as Record<string, unknown> | undefined;
+	const firstLoc = item.locations?.[0]?.path;
+
+	if (item.kind === "read" && firstLoc) {
+		return { param: firstLoc, openPath: firstLoc };
+	}
+	if (item.kind === "fetch") {
+		const url = typeof raw?.url === "string" ? raw.url : undefined;
+		return { param: url };
+	}
+	if (item.kind === "search") {
+		const pattern =
+			typeof raw?.pattern === "string"
+				? raw.pattern
+				: typeof raw?.query === "string"
+					? (raw.query as string)
+					: undefined;
+		return { param: pattern };
+	}
+	if (firstLoc) {
+		return { param: firstLoc, openPath: firstLoc };
+	}
+	return {};
+}
+
+function ExplorationItem({
+	item,
+	plugin,
+	vaultPath,
+}: {
+	item: ExplorationToolCall;
+	plugin: AgentClientPlugin;
+	vaultPath: string;
+}) {
+	const { param, openPath } = describeExplorationItem(item);
+	const relativeParam = useMemo(() => {
+		if (!param) return undefined;
+		if (item.kind === "read" || openPath) {
+			return toRelativePath(param, vaultPath);
+		}
+		return param;
+	}, [param, openPath, vaultPath, item.kind]);
+	const relativeOpenPath = useMemo(
+		() => (openPath ? toRelativePath(openPath, vaultPath) : undefined),
+		[openPath, vaultPath],
+	);
+
+	const handleOpen = useCallback(() => {
+		if (!relativeOpenPath) return;
+		void plugin.app.workspace.openLinkText(relativeOpenPath, "");
+	}, [plugin, relativeOpenPath]);
+
+	const isActive = item.status !== "completed" && item.status !== "failed";
+	const isFailed = item.status === "failed";
+
+	return (
+		<div className="agent-client-exploration-item">
+			<LucideIcon
+				name={getExplorationIcon(item.kind)}
+				className="agent-client-exploration-item-icon"
+			/>
+			<span className="agent-client-exploration-item-title">
+				{item.title || item.kind || "step"}
+			</span>
+			{relativeParam &&
+				(relativeOpenPath ? (
+					<a
+						className="agent-client-exploration-item-param agent-client-exploration-item-link"
+						onClick={(e) => {
+							e.preventDefault();
+							handleOpen();
+						}}
+						href="#"
+						title={relativeParam}
+					>
+						{relativeParam}
+					</a>
+				) : (
+					<span
+						className="agent-client-exploration-item-param"
+						title={relativeParam}
+					>
+						{relativeParam}
+					</span>
+				))}
+			{isActive && (
+				<LucideIcon
+					name="loader"
+					className="agent-client-exploration-item-status agent-client-exploration-active"
+				/>
+			)}
+			{isFailed && (
+				<LucideIcon
+					name="x"
+					className="agent-client-exploration-item-status agent-client-exploration-item-failed"
+				/>
+			)}
+		</div>
+	);
+}
+
+function ExplorationGroup({
+	items,
+	plugin,
+}: {
+	items: ExplorationToolCall[];
+	plugin: AgentClientPlugin;
+	messageId: string;
+	terminalClient?: AcpClient;
+	onApprovePermission?: (
+		requestId: string,
+		optionId: string,
+	) => Promise<void>;
+}) {
+	const hasActive = items.some((it) => it.status !== "completed");
+	const [expanded, setExpanded] = useState(false);
+
+	const vaultPath = useMemo(() => {
+		const adapter = plugin.app.vault.adapter;
+		if (adapter instanceof FileSystemAdapter) {
+			return adapter.getBasePath();
+		}
+		return "";
+	}, [plugin]);
+
+	const summary = useMemo(() => {
+		const byTitle = new Map<string, number>();
+		for (const it of items) {
+			const t = it.title || it.kind || "step";
+			byTitle.set(t, (byTitle.get(t) ?? 0) + 1);
+		}
+		return Array.from(byTitle.entries())
+			.map(([t, n]) => (n > 1 ? `${t} ×${n}` : t))
+			.join(" · ");
+	}, [items]);
+
+	return (
+		<div
+			className={`agent-client-exploration-group${expanded ? " agent-client-exploration-expanded" : ""}`}
+		>
+			<button
+				type="button"
+				className="agent-client-exploration-header"
+				onClick={() => setExpanded((v) => !v)}
+				aria-expanded={expanded}
+			>
+				<LucideIcon
+					name={expanded ? "chevron-down" : "chevron-right"}
+					className="agent-client-exploration-chevron"
+				/>
+				<LucideIcon
+					name={hasActive ? "loader" : "telescope"}
+					className={`agent-client-exploration-icon${hasActive ? " agent-client-exploration-active" : ""}`}
+				/>
+				<span className="agent-client-exploration-count">
+					Explored {items.length} {items.length === 1 ? "step" : "steps"}
+				</span>
+				<span className="agent-client-exploration-summary">{summary}</span>
+			</button>
+			{expanded && (
+				<div className="agent-client-exploration-body">
+					{items.map((item, idx) => (
+						<ExplorationItem
+							key={idx}
+							item={item}
+							plugin={plugin}
+							vaultPath={vaultPath}
+						/>
+					))}
+				</div>
+			)}
+		</div>
+	);
 }
 
 export const MessageBubble = React.memo(function MessageBubble({
@@ -397,6 +612,18 @@ export const MessageBubble = React.memo(function MessageBubble({
 			className={`agent-client-message-renderer ${message.role === "user" ? "agent-client-message-user" : "agent-client-message-assistant"}`}
 		>
 			{groups.map((group, idx) => {
+				if (group.type === "exploration") {
+					return (
+						<ExplorationGroup
+							key={idx}
+							items={group.items}
+							plugin={plugin}
+							messageId={message.id}
+							terminalClient={terminalClient}
+							onApprovePermission={onApprovePermission}
+						/>
+					);
+				}
 				if (group.type === "attachments") {
 					// Render attachments (images + resource_links) in horizontal strip
 					return (

@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-agent-client",
-	"version": "0.10.2",
-	"description": "Use AI coding agents via the Agent Client Protocol directly inside Obsidian",
+	"name": "obsidian-agent-client-multi-cli",
+	"version": "0.10.2-fork.1",
+	"description": "Fork of obsidian-agent-client with built-in presets for Qoder CLI, CodeBuddy CLI, Qwen Code, and OpenCode (in addition to Claude Code / Codex / Gemini CLI).",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

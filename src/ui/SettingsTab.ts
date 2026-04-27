@@ -19,6 +19,38 @@ import {
 	parseChatFontSize,
 } from "../services/settings-normalizer";
 
+interface AgentPreset {
+	id: string;
+	displayName: string;
+	command: string;
+	args: string[];
+	env: AgentEnvVar[];
+}
+
+const CODEBUDDY_PRESET: AgentPreset = {
+	id: "codebuddy",
+	displayName: "CodeBuddy",
+	command: "codebuddy",
+	args: ["--acp"],
+	env: [],
+};
+
+const QWEN_PRESET: AgentPreset = {
+	id: "qwen-code",
+	displayName: "Qwen Code",
+	command: "qwen",
+	args: ["--experimental-acp"],
+	env: [],
+};
+
+const OPENCODE_PRESET: AgentPreset = {
+	id: "opencode",
+	displayName: "OpenCode",
+	command: "opencode",
+	args: ["--acp"],
+	env: [],
+};
+
 export class AgentClientSettingTab extends PluginSettingTab {
 	plugin: AgentClientPlugin;
 	private agentSelector: DropdownComponent | null = null;
@@ -500,6 +532,7 @@ export class AgentClientSettingTab extends PluginSettingTab {
 		this.renderClaudeSettings(containerEl);
 		this.renderCodexSettings(containerEl);
 		this.renderGeminiSettings(containerEl);
+		this.renderQoderSettings(containerEl);
 
 		new Setting(containerEl).setName("Custom agents").setHeading();
 
@@ -783,6 +816,11 @@ export class AgentClientSettingTab extends PluginSettingTab {
 				this.plugin.settings.gemini.displayName ||
 					this.plugin.settings.gemini.id,
 			),
+			toOption(
+				this.plugin.settings.qoder.id,
+				this.plugin.settings.qoder.displayName ||
+					this.plugin.settings.qoder.id,
+			),
 		];
 		for (const agent of this.plugin.settings.customAgents) {
 			if (agent.id && agent.id.length > 0) {
@@ -1029,6 +1067,61 @@ export class AgentClientSettingTab extends PluginSettingTab {
 			});
 	}
 
+	private renderQoderSettings(sectionEl: HTMLElement) {
+		const qoder = this.plugin.settings.qoder;
+
+		new Setting(sectionEl)
+			.setName(qoder.displayName || "Qoder CLI")
+			.setHeading();
+
+		const qoderPathSetting = new Setting(sectionEl)
+			.setName("Path")
+			.setDesc(
+				'Command name or path to qodercli. Use just "qodercli" to let the login shell resolve it, or enter an absolute path. Authenticates via OAuth — run `qodercli` once in terminal to log in.',
+			)
+			.addText((text) => {
+				text.setPlaceholder("qodercli")
+					.setValue(qoder.command)
+					.onChange(async (value) => {
+						this.plugin.settings.qoder.command = value.trim();
+						await this.plugin.saveSettings();
+					});
+			});
+		this.addAutoDetectButton(qoderPathSetting, "qodercli", async (path) => {
+			this.plugin.settings.qoder.command = path;
+			await this.plugin.saveSettings();
+		});
+		this.addInstallHint(sectionEl, "@qoder-ai/qodercli");
+
+		new Setting(sectionEl)
+			.setName("Arguments")
+			.setDesc(
+				'Enter one argument per line. Qoder CLI requires the "--acp" option.',
+			)
+			.addTextArea((text) => {
+				text.setPlaceholder("--acp")
+					.setValue(this.formatArgs(qoder.args))
+					.onChange(async (value) => {
+						this.plugin.settings.qoder.args = this.parseArgs(value);
+						await this.plugin.saveSettings();
+					});
+				text.inputEl.rows = 3;
+			});
+
+		new Setting(sectionEl)
+			.setName("Environment variables")
+			.setDesc("Enter KEY=VALUE pairs, one per line. (Stored as plain text)")
+			.addTextArea((text) => {
+				text.setPlaceholder("")
+					.setValue(this.formatEnv(qoder.env))
+					.onChange(async (value) => {
+						this.plugin.settings.qoder.env = this.parseEnv(value);
+						await this.plugin.saveSettings();
+					});
+				text.inputEl.rows = 3;
+			});
+	}
+
 	private renderCustomAgents(containerEl: HTMLElement) {
 		if (this.plugin.settings.customAgents.length === 0) {
 			containerEl.createEl("p", {
@@ -1040,9 +1133,39 @@ export class AgentClientSettingTab extends PluginSettingTab {
 			});
 		}
 
+		new Setting(containerEl)
+			.setName("Quick presets")
+			.setDesc(
+				"Add a pre-configured agent. The CLI tool itself must be installed and authenticated separately (see each tool's docs).",
+			)
+			.addButton((button) => {
+				button
+					.setButtonText("Add CodeBuddy")
+					.setTooltip(
+						"Adds CodeBuddy CLI preset (command: codebuddy, args: --acp). Requires `codebuddy` CLI installed and logged in.",
+					)
+					.onClick(() => this.addAgentPreset(CODEBUDDY_PRESET));
+			})
+			.addButton((button) => {
+				button
+					.setButtonText("Add Qwen Code")
+					.setTooltip(
+						"Adds Qwen Code preset (command: qwen, args: --experimental-acp).",
+					)
+					.onClick(() => this.addAgentPreset(QWEN_PRESET));
+			})
+			.addButton((button) => {
+				button
+					.setButtonText("Add OpenCode")
+					.setTooltip(
+						"Adds OpenCode preset (command: opencode, args: --acp).",
+					)
+					.onClick(() => this.addAgentPreset(OPENCODE_PRESET));
+			});
+
 		new Setting(containerEl).addButton((button) => {
 			button
-				.setButtonText("Add custom agent")
+				.setButtonText("Add blank custom agent")
 				.setCta()
 				.onClick(async () => {
 					const newId = this.generateCustomAgentId();
@@ -1060,6 +1183,23 @@ export class AgentClientSettingTab extends PluginSettingTab {
 					this.display();
 				});
 		});
+	}
+
+	private async addAgentPreset(preset: AgentPreset): Promise<void> {
+		const id = this.generateCustomAgentId(preset.id);
+		const displayName = this.generateCustomAgentDisplayName(
+			preset.displayName,
+		);
+		this.plugin.settings.customAgents.push({
+			id,
+			displayName,
+			command: preset.command,
+			args: [...preset.args],
+			env: preset.env.map((e) => ({ ...e })),
+		});
+		this.plugin.ensureDefaultAgentId();
+		await this.plugin.saveSettings();
+		this.display();
 	}
 
 	private renderCustomAgent(
@@ -1175,8 +1315,8 @@ export class AgentClientSettingTab extends PluginSettingTab {
 			});
 	}
 
-	private generateCustomAgentDisplayName(): string {
-		const base = "Custom agent";
+	private generateCustomAgentDisplayName(baseName?: string): string {
+		const base = baseName && baseName.trim().length > 0 ? baseName : "Custom agent";
 		const existing = new Set<string>();
 		existing.add(
 			this.plugin.settings.claude.displayName ||
@@ -1189,6 +1329,10 @@ export class AgentClientSettingTab extends PluginSettingTab {
 		existing.add(
 			this.plugin.settings.gemini.displayName ||
 				this.plugin.settings.gemini.id,
+		);
+		existing.add(
+			this.plugin.settings.qoder.displayName ||
+				this.plugin.settings.qoder.id,
 		);
 		for (const item of this.plugin.settings.customAgents) {
 			existing.add(item.displayName || item.id);
@@ -1206,11 +1350,18 @@ export class AgentClientSettingTab extends PluginSettingTab {
 	}
 
 	// Create a readable ID for new custom agents and avoid collisions
-	private generateCustomAgentId(): string {
-		const base = "custom-agent";
+	private generateCustomAgentId(baseId?: string): string {
+		const base = baseId && baseId.trim().length > 0 ? baseId : "custom-agent";
+		const reserved = new Set<string>([
+			this.plugin.settings.claude.id,
+			this.plugin.settings.codex.id,
+			this.plugin.settings.gemini.id,
+			this.plugin.settings.qoder.id,
+		]);
 		const existing = new Set(
 			this.plugin.settings.customAgents.map((item) => item.id),
 		);
+		for (const id of reserved) existing.add(id);
 		if (!existing.has(base)) {
 			return base;
 		}

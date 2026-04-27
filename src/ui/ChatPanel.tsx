@@ -262,6 +262,11 @@ export function ChatPanel({
 				plugin.settings.gemini.displayName || plugin.settings.gemini.id
 			);
 		}
+		if (activeId === plugin.settings.qoder.id) {
+			return (
+				plugin.settings.qoder.displayName || plugin.settings.qoder.id
+			);
+		}
 		const custom = plugin.settings.customAgents.find(
 			(agent) => agent.id === activeId,
 		);

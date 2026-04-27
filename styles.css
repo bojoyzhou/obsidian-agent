@@ -241,6 +241,27 @@ If your plugin does not need CSS, delete this file.
 	font-size: 0.9em;
 }
 
+a.agent-client-tool-call-location-link {
+	color: var(--text-muted);
+	text-decoration: none;
+	cursor: pointer;
+}
+
+a.agent-client-tool-call-location-link:hover {
+	color: var(--text-accent);
+	text-decoration: underline;
+}
+
+a.agent-client-text-path-link {
+	color: var(--text-accent);
+	text-decoration: none;
+	cursor: pointer;
+}
+
+a.agent-client-text-path-link:hover {
+	text-decoration: underline;
+}
+
 .agent-client-message-tool-call-command {
 	color: var(--text-muted);
 	margin: 4px 0;
@@ -249,6 +270,121 @@ If your plugin does not need CSS, delete this file.
 .agent-client-message-tool-call-command code {
 	font-family: var(--font-monospace);
 	font-size: 0.9em;
+}
+
+/* Exploration group (folded read/search/fetch tool calls) */
+.agent-client-exploration-group {
+	margin: 4px 0 8px;
+}
+
+.agent-client-exploration-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+	padding: 4px 6px;
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	color: var(--text-muted);
+	font-size: 0.85em;
+	cursor: pointer;
+	text-align: left;
+}
+
+.agent-client-exploration-header:hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.agent-client-exploration-chevron svg,
+.agent-client-exploration-icon svg {
+	width: 12px;
+	height: 12px;
+	flex-shrink: 0;
+}
+
+.agent-client-exploration-icon.agent-client-exploration-active svg {
+	animation: agent-client-spin 1s linear infinite;
+}
+
+@keyframes agent-client-spin {
+	to { transform: rotate(360deg); }
+}
+
+.agent-client-exploration-count {
+	flex-shrink: 0;
+}
+
+.agent-client-exploration-summary {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-faint);
+	font-size: 0.95em;
+}
+
+.agent-client-exploration-body {
+	margin: 2px 0 0 14px;
+	padding-left: 8px;
+	border-left: 1px solid var(--background-modifier-border);
+}
+
+.agent-client-exploration-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 0;
+	font-size: 0.85em;
+	color: var(--text-muted);
+	min-width: 0;
+}
+
+.agent-client-exploration-item-icon svg {
+	width: 12px;
+	height: 12px;
+	flex-shrink: 0;
+	opacity: 0.75;
+}
+
+.agent-client-exploration-item-title {
+	flex-shrink: 0;
+	color: var(--text-muted);
+}
+
+.agent-client-exploration-item-param {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-faint);
+	font-size: 0.95em;
+	direction: rtl;
+	text-align: left;
+}
+
+a.agent-client-exploration-item-link {
+	color: var(--text-faint);
+	text-decoration: none;
+	cursor: pointer;
+}
+
+a.agent-client-exploration-item-link:hover {
+	color: var(--text-accent);
+	text-decoration: underline;
+}
+
+.agent-client-exploration-item-status svg {
+	width: 11px;
+	height: 11px;
+	flex-shrink: 0;
+}
+
+.agent-client-exploration-item-failed svg {
+	color: var(--text-error);
 }
 
 /* Plan */

@@ -98,24 +98,17 @@ export function applyUpdateLastMessage(
 	}
 
 	const lastMessage = prev[prev.length - 1];
-	const updatedMessage = { ...lastMessage };
+	const updatedMessage = { ...lastMessage, content: [...lastMessage.content] };
 
 	if (content.type === "text" || content.type === "agent_thought") {
-		const existingContentIndex = updatedMessage.content.findIndex(
-			(c) => c.type === content.type,
-		);
-		if (existingContentIndex >= 0) {
-			const existingContent =
-				updatedMessage.content[existingContentIndex];
-			if (
-				existingContent.type === "text" ||
-				existingContent.type === "agent_thought"
-			) {
-				updatedMessage.content[existingContentIndex] = {
-					type: content.type,
-					text: existingContent.text + content.text,
-				};
-			}
+		const lastIdx = updatedMessage.content.length - 1;
+		const lastContent =
+			lastIdx >= 0 ? updatedMessage.content[lastIdx] : undefined;
+		if (lastContent && lastContent.type === content.type) {
+			updatedMessage.content[lastIdx] = {
+				type: content.type,
+				text: lastContent.text + content.text,
+			};
 		} else {
 			updatedMessage.content.push(content);
 		}
@@ -152,21 +145,17 @@ export function applyUpdateUserMessage(
 	}
 
 	const lastMessage = prev[prev.length - 1];
-	const updatedMessage = { ...lastMessage };
+	const updatedMessage = { ...lastMessage, content: [...lastMessage.content] };
 
 	if (content.type === "text") {
-		const existingContentIndex = updatedMessage.content.findIndex(
-			(c) => c.type === "text",
-		);
-		if (existingContentIndex >= 0) {
-			const existingContent =
-				updatedMessage.content[existingContentIndex];
-			if (existingContent.type === "text") {
-				updatedMessage.content[existingContentIndex] = {
-					type: "text",
-					text: existingContent.text + content.text,
-				};
-			}
+		const lastIdx = updatedMessage.content.length - 1;
+		const lastContent =
+			lastIdx >= 0 ? updatedMessage.content[lastIdx] : undefined;
+		if (lastContent && lastContent.type === "text") {
+			updatedMessage.content[lastIdx] = {
+				type: "text",
+				text: lastContent.text + content.text,
+			};
 		} else {
 			updatedMessage.content.push(content);
 		}
@@ -246,7 +235,23 @@ export function applyUpsertToolCall(
 
 	if (found) return updated;
 
-	// Not found: create new message and register in index
+	// Not found: append to the last assistant message if it exists,
+	// otherwise create a new message. Keeping a whole assistant turn
+	// (text/thought + tool calls) inside one message lets MessageBubble
+	// group consecutive read-only tool calls together.
+	if (prev.length > 0 && prev[prev.length - 1].role === "assistant") {
+		const lastIdx = prev.length - 1;
+		const lastMessage = prev[lastIdx];
+		toolCallIndex.set(content.toolCallId, lastIdx);
+		return [
+			...prev.slice(0, -1),
+			{
+				...lastMessage,
+				content: [...lastMessage.content, content],
+			},
+		];
+	}
+
 	toolCallIndex.set(content.toolCallId, prev.length);
 	return [
 		...prev,

@@ -124,15 +124,30 @@ export const ToolCallBlock = React.memo(function ToolCallBlock({
 					)}
 				{locations && locations.length > 0 && (
 					<div className="agent-client-message-tool-call-locations">
-						{locations.map((loc, idx) => (
-							<span
-								key={idx}
-								className="agent-client-message-tool-call-location"
-							>
-								{toRelativePath(loc.path, vaultPath)}
-								{loc.line != null && `:${loc.line}`}
-							</span>
-						))}
+						{locations.map((loc, idx) => {
+							const relativePath = toRelativePath(
+								loc.path,
+								vaultPath,
+							);
+							const display = `${relativePath}${loc.line != null ? `:${loc.line}` : ""}`;
+							return (
+								<a
+									key={idx}
+									className="agent-client-message-tool-call-location agent-client-tool-call-location-link"
+									href="#"
+									onClick={(e) => {
+										e.preventDefault();
+										void plugin.app.workspace.openLinkText(
+											relativePath,
+											"",
+										);
+									}}
+									title={display}
+								>
+									{display}
+								</a>
+							);
+						})}
 					</div>
 				)}
 			</div>

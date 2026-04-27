@@ -84,6 +84,14 @@ export interface CodexAgentSettings extends BaseAgentSettings {
 }
 
 /**
+ * Configuration for Qoder CLI agent.
+ *
+ * Qoder authenticates via OAuth login (run `qodercli` once in terminal),
+ * no API key field is required.
+ */
+export type QoderAgentSettings = BaseAgentSettings;
+
+/**
  * Configuration for custom ACP-compatible agents.
  *
  * Uses only the base settings, allowing users to configure

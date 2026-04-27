@@ -58,6 +58,10 @@ export function getAvailableAgentsFromSettings(
 			id: settings.gemini.id,
 			displayName: settings.gemini.displayName || settings.gemini.id,
 		},
+		{
+			id: settings.qoder.id,
+			displayName: settings.qoder.displayName || settings.qoder.id,
+		},
 		...settings.customAgents.map((agent) => ({
 			id: agent.id,
 			displayName: agent.displayName || agent.id,
@@ -101,6 +105,9 @@ export function findAgentSettings(
 	}
 	if (agentId === settings.gemini.id) {
 		return settings.gemini;
+	}
+	if (agentId === settings.qoder.id) {
+		return settings.qoder;
 	}
 	// Search in custom agents
 	const customAgent = settings.customAgents.find(

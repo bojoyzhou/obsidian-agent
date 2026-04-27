@@ -38,6 +38,7 @@ import {
 	GeminiAgentSettings,
 	ClaudeAgentSettings,
 	CodexAgentSettings,
+	QoderAgentSettings,
 	CustomAgentSettings,
 } from "./types/agent";
 import type { SavedSessionInfo } from "./types/session";
@@ -70,6 +71,7 @@ export interface AgentClientPluginSettings {
 	gemini: GeminiAgentSettings;
 	claude: ClaudeAgentSettings;
 	codex: CodexAgentSettings;
+	qoder: QoderAgentSettings;
 	customAgents: CustomAgentSettings[];
 	/** Default agent ID for new views (renamed from activeAgentId for multi-session) */
 	defaultAgentId: string;
@@ -143,6 +145,13 @@ const DEFAULT_SETTINGS: AgentClientPluginSettings = {
 		apiKey: "",
 		command: "gemini",
 		args: ["--experimental-acp"],
+		env: [],
+	},
+	qoder: {
+		id: "qoder-acp",
+		displayName: "Qoder CLI",
+		command: "qodercli",
+		args: ["--acp"],
 		env: [],
 	},
 	customAgents: [],
@@ -633,6 +642,11 @@ export default class AgentClientPlugin extends Plugin {
 				displayName:
 					this.settings.gemini.displayName || this.settings.gemini.id,
 			},
+			{
+				id: this.settings.qoder.id,
+				displayName:
+					this.settings.qoder.displayName || this.settings.qoder.id,
+			},
 			...this.settings.customAgents.map((agent) => ({
 				id: agent.id,
 				displayName: agent.displayName || agent.id,
@@ -835,6 +849,7 @@ export default class AgentClientPlugin extends Plugin {
 		const rc = obj(raw.claude) ?? {};
 		const rk = obj(raw.codex) ?? {};
 		const rg = obj(raw.gemini) ?? {};
+		const rq = obj(raw.qoder) ?? {};
 		const re = obj(raw.exportSettings) ?? {};
 		const rd = obj(raw.displaySettings) ?? {};
 
@@ -852,6 +867,7 @@ export default class AgentClientPlugin extends Plugin {
 			D.claude.id,
 			D.codex.id,
 			D.gemini.id,
+			D.qoder.id,
 			...customAgents.map((a) => a.id),
 		];
 		const rawDefaultId =
@@ -896,6 +912,16 @@ export default class AgentClientPlugin extends Plugin {
 						? sanitizeArgs(rg.args)
 						: D.gemini.args,
 				env: normalizeEnvVars(rg.env),
+			},
+			qoder: {
+				id: D.qoder.id,
+				displayName: str(rq.displayName, D.qoder.displayName),
+				command: str(rq.command, "") || D.qoder.command,
+				args:
+					sanitizeArgs(rq.args).length > 0
+						? sanitizeArgs(rq.args)
+						: D.qoder.args,
+				env: normalizeEnvVars(rq.env),
 			},
 			customAgents,
 			defaultAgentId,
@@ -1117,6 +1143,7 @@ export default class AgentClientPlugin extends Plugin {
 		ids.add(this.settings.claude.id);
 		ids.add(this.settings.codex.id);
 		ids.add(this.settings.gemini.id);
+		ids.add(this.settings.qoder.id);
 		for (const agent of this.settings.customAgents) {
 			if (agent.id && agent.id.length > 0) {
 				ids.add(agent.id);
